@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ProgTest - Профиль (MVP)</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -15,12 +16,18 @@
         document.addEventListener("DOMContentLoaded", () => {
             const output = document.getElementById("output");
 
-            if (!window.Telegram || !window.Telegram.WebApp) {
-                output.textContent = "❌ Сайт открыт НЕ из Telegram";
+            // Инициализируем объект Telegram
+            const tg = window.Telegram.WebApp;
+
+            // Сообщаем Telegram, что приложение готово
+            tg.ready();
+
+            if (!tg.initDataUnsafe || Object.keys(tg.initDataUnsafe).length === 0) {
+                output.textContent = "❌ Сайт открыт НЕ из Telegram (или данные не переданы)";
                 return;
             }
 
-            const user = window.Telegram.WebApp.initDataUnsafe?.user;
+            const user = tg.initDataUnsafe?.user;
 
             if (!user) {
                 output.textContent = "⚠️ Telegram есть, но данные пользователя отсутствуют";
@@ -32,6 +39,9 @@
                 "ID: " + user.id + "\n" +
                 "Username: @" + (user.username ?? "нет") + "\n" +
                 "Имя: " + user.first_name;
+            
+            // Опционально: расширить приложение на весь экран
+            tg.expand();
         });
     </script>
 

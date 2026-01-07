@@ -5,9 +5,36 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ProgTest - Профиль (MVP)</title>
     <link rel="stylesheet" href="style.css">
-    console.log(window.Telegram?.WebApp?.initDataUnsafe?.user);
 </head>
 <body>
+
+    <h2>Проверка Telegram WebApp</h2>
+    <pre id="output">Загрузка...</pre>
+
+    <script>
+        document.addEventListener("DOMContentLoaded", () => {
+            const output = document.getElementById("output");
+
+            if (!window.Telegram || !window.Telegram.WebApp) {
+                output.textContent = "❌ Сайт открыт НЕ из Telegram";
+                return;
+            }
+
+            const user = window.Telegram.WebApp.initDataUnsafe?.user;
+
+            if (!user) {
+                output.textContent = "⚠️ Telegram есть, но данные пользователя отсутствуют";
+                return;
+            }
+
+            output.textContent =
+                "✅ Открыто из Telegram\n\n" +
+                "ID: " + user.id + "\n" +
+                "Username: @" + (user.username ?? "нет") + "\n" +
+                "Имя: " + user.first_name;
+        });
+    </script>
+
     <script type="module" src="./src/main.js"></script>
 </body>
 </html>

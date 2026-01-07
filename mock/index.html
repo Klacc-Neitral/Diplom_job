@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ProgTest - Профиль</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <header class="header">
+        <div class="container">
+            <a href="#" class="logo">
+                ProgTest
+                <span class="logo-icon"></span>
+            </a>
+            <nav class="main-nav">
+                <ul>
+                    <li><a href="#">Новости</a></li>
+                    <li><a href="#">Помощь</a></li>
+                    <li><a href="#">Услуги</a></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <main class="main">
+        <div class="container">
+            <div class="profile-card"> 
+                <input type="radio" id="tab-my-courses" name="profile-tabs" checked class="hidden">
+                <input type="radio" id="tab-all-courses" name="profile-tabs" class="hidden">
+                
+                <div class="profile-tabs-wrapper">
+                    <label for="tab-my-courses" class="tab-label">Мои курсы</label>
+                    <label for="tab-all-courses" class="tab-label">Все курсы</label>
+                </div>
+
+                <div class="profile-content">
+                    
+                    <div id="content-my-courses" class="tab-content">
+                        <section class="profile-details">
+                            <div class="profile-avatar">
+                                <h2>Аватар профиля</h2>
+                                <img src="./img/Rectangle 55.png" alt="Аватар" class="avatar-image">
+                                <button class="btn btn-avatar">Выбрать аватар</button>
+                            </div>
+
+                            <form class="profile-form">
+                                <h2>Личные данные</h2>
+                                <div class="form-group">
+                                    <label for="login">Логин</label>
+                                    <input type="text" id="login" value="Elite_Emperor">
+                                </div>
+                                <div class="form-group">
+                                    <label for="email">Email</label>
+                                    <input type="email" id="email" value="marselgalkamov66@gmail.com">
+                                </div>
+                                <div class="form-group">
+                                    <label for="name">Имя</label>
+                                    <input type="text" id="name" value="Марсель">
+                                </div>
+                                <div class="form-group">
+                                    <label for="surname">Фамилия</label>
+                                    <input type="text" id="surname" value="Галлямов">
+                                </div>
+                                <button type="button" class="btn btn-save" id="openModalBtn">Изменить</button>
+                            </form>
+                        </section>
+
+                        <section class="courses-grid">
+                            <div class="course-card" style="background-image: linear-gradient(rgba(0,0,0,0.4), rgba(0,0,0,0.1) 40%, rgba(0,0,0,0.7) 100%), url('./img/6eaf7f12c03b5a8fd35eb0b6335ce7b1.jpg');">
+                                <div class="course-card-category">История</div>
+                                <div class="course-card-footer">
+                                    <div class="progress-container">
+                                        <div class="progress-bar">
+                                            <div class="progress-bar-inner" style="width: 70%;"></div>
+                                        </div>
+                                        <button class="btn btn-course">Продолжить</button>
+                                    </div>
+                                    <span class="course-card-percent">70%</span>
+                                </div>
+                            </div>
+                            <div class="course-card" style="background-image: linear-gradient(rgba(0,0,0,0.4), rgba(0,0,0,0.1) 40%, rgba(0,0,0,0.7) 100%), url('./img/Rectangle 42.png');">
+                                <div class="course-card-category">Инструменты для создания иллюстраций</div>
+                                <div class="course-card-footer">
+                                    <div class="progress-container">
+                                        <div class="progress-bar">
+                                            <div class="progress-bar-inner" style="width: 0%;"></div>
+                                        </div>
+                                        <button class="btn btn-course btn-start">Начать</button>
+                                    </div>
+                                    <span class="course-card-percent">0%</span>
+                                </div>
+                            </div>
+                            <div class="course-card" style="background-image: linear-gradient(rgba(0,0,0,0.4), rgba(0,0,0,0.1) 40%, rgba(0,0,0,0.7) 100%), url('./img/Rectangle 43.png');">
+                                <div class="course-card-category">Математика</div>
+                                <div class="course-card-footer">
+                                    <div class="progress-container">
+                                        <div class="progress-bar">
+                                            <div class="progress-bar-inner" style="width: 70%;"></div>
+                                        </div>
+                                        <button class="btn btn-course">Продолжить</button>
+                                    </div>
+                                    <span class="course-card-percent">70%</span>
+                                </div>
+                            </div>
+                            <div class="course-card" style="background-image: linear-gradient(rgba(0,0,0,0.4), rgba(0,0,0,0.1) 40%, rgba(0,0,0,0.7) 100%), url('./img/Rectangle 44.png');">
+                                <div class="course-card-category">Нейронные сети</div>
+                                <div class="course-card-footer">
+                                    <div class="progress-container">
+                                        <div class="progress-bar">
+                                            <div class="progress-bar-inner" style="width: 100%;"></div>
+                                        </div>
+                                        <button class="btn btn-course">Продолжить</button>
+                                    </div>
+                                    <span class="course-card-percent">100%</span>
+                                </div>
+                            </div>
+                            <div class="course-card" style="background-image: linear-gradient(rgba(0,0,0,0.4), rgba(0,0,0,0.1) 40%, rgba(0,0,0,0.7) 100%), url('./img/Rectangle 45.png');">
+                                <div class="course-card-category">Python, задачи, анимации</div>
+                                <div class="course-card-footer">
+                                    <div class="progress-container">
+                                        <div class="progress-bar">
+                                            <div class="progress-bar-inner" style="width: 50%;"></div>
+                                        </div>
+                                        <button class="btn btn-course">Продолжить</button>
+                                    </div>
+                                    <span class="course-card-percent">50%</span>
+                                </div>
+                            </div>
+                            <div class="course-card" style="background-image: linear-gradient(rgba(0,0,0,0.4), rgba(0,0,0,0.1) 40%, rgba(0,0,0,0.7) 100%), url('./img/Rectangle 46.png');">
+                                <div class="course-card-category">Анализ данных</div>
+                                <div class="course-card-footer">
+                                    <div class="progress-container">
+                                        <div class="progress-bar">
+                                            <div class="progress-bar-inner" style="width: 0%;"></div>
+                                        </div>
+                                        <button class="btn btn-course btn-start">Начать</button>
+                                    </div>
+                                    <span class="course-card-percent">0%</span>
+                                </div>
+                            </div>
+                        </section>
+                    </div>
+
+                    <div id="content-all-courses" class="tab-content">
+                        <section class="all-courses-view">
+                            
+                            <div class="all-courses-header">
+                                <div class="motivation-box">
+                                    <p> Развивай свои навыки программирования. Выбери новые курсы, чтобы углубить свои знания и достичь новых карьерных высот. Не останавливайся на достигнутом!</p>
+                                </div>
+                            </div>
+
+                            <div class="all-courses-list">
+                                <div class="course-listing" id="course-react">
+                                    <div class="course-listing-info">
+                                        <h3>React.js с нуля до профи</h3>
+                                        <p>Научитесь создавать современные, быстрые и масштабируемые веб-приложения, используя React, Redux и Next.js.</p>
+                                    </div>
+                                    <div class="course-listing-actions">
+                                        <span>Уровень: Продвинутый</span>
+                                        <button class="btn btn-enroll">Записаться</button>
+                                    </div>
+                                </div>
+                                <div class="course-listing" id="course-time">
+                                    <div class="course-listing-info">
+                                        <h3>Эффективный тайм-менеджмент</h3>
+                                        <p>Освойте методики планирования, расстановки приоритетов (Getting Things Done) и повышения личной продуктивности.</p>
+                                    </div>
+                                    <div class="course-listing-actions">
+                                        <span>Уровень: Базовый</span>
+                                        <button class="btn btn-enroll">Записаться</button>
+                                    </div>
+                                </div>
+                                <div class="course-listing" id="course-startup">
+                                    <div class="course-listing-info">
+                                        <h3>Запуск IT-стартапа: от идеи до инвестиций</h3>
+                                        <p>Пошаговый план по созданию собственного технологического бизнеса, включая MVP, маркетинг и поиск финансирования.</p>
+                                    </div>
+                                    <div class="course-listing-actions">
+                                        <span>Уровень: Средний</span>
+                                        <button class="btn btn-enroll">Записаться</button>
+                                    </div>
+                                </div>
+                                <div class="course-listing" id="course-design">
+                                    <div class="course-listing-info">
+                                        <h3>Основы UX/UI дизайна</h3>
+                                        <p>Изучите принципы создания удобных и привлекательных пользовательских интерфейсов в Figma и Adobe XD.</p>
+                                    </div>
+                                    <div class="course-listing-actions">
+                                        <span>Уровень: Базовый</span>
+                                        <button class="btn btn-enroll">Записаться</button>
+                                    </div>
+                                </div>
+                                <div class="course-listing" id="course-english">
+                                    <div class="course-listing-info">
+                                        <h3>Технический английский для IT-специалистов</h3>
+                                        <p>Повысьте свой уровень владения английским для чтения документации, общения с коллегами и прохождения собеседований.</p>
+                                    </div>
+                                    <div class="course-listing-actions">
+                                        <span>Уровень: Средний</span>
+                                        <button class="btn btn-enroll">Записаться</button>
+                                    </div>
+                                </div>
+                                
+                            </div>
+
+                        </section>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Модальное окно -->
+    <div id="editModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>Редактировать профиль</h2>
+            <form>
+                <div class="form-group">
+                    <label for="edit-login">Логин</label>
+                    <input type="text" id="edit-login" value="Elite_Emperor">
+                </div>
+                <div class="form-group">
+                    <label for="edit-email">Email</label>
+                    <input type="email" id="edit-email" value="marselgalkamov66@gmail.com">
+                </div>
+                <div class="form-group">
+                    <label for="edit-name">Имя</label>
+                    <input type="text" id="edit-name" value="Марсель">
+                </div>
+                <div class="form-group">
+                    <label for="edit-surname">Фамилия</label>
+                    <input type="text" id="edit-surname" value="Галлямов">
+                </div>
+                <button type="submit" class="btn btn-save">Изменить</button>
+            </form>
+        </div>
+    </div>
+
+    <footer class="footer">
+        <div class="container">
+            <a href="#" class="logo">
+                ProgTest
+                <span class="logo-icon"></span>
+            </a>
+            <nav class="footer-nav">
+                <ul>
+                    <li><a href="#">Курсы</a></li>
+                    <li><a href="#">Миссия</a></li>
+                    <li><a href="#">Эффективность</a></li>
+                    <li><a href="#">Вакансии</a></li>
+                    <li><a href="#">Отзывы</a></li>
+                </ul>
+            </nav>
+            <div class="social-links">
+                <a href="#" aria-label="Telegram">
+                    <img src="./img/Vector.png" alt="">
+                </a>
+                <a href="#" aria-label="YouTube">
+                    <img src="./img/Vectorf.png" alt="">
+                </a>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        // JavaScript для модального окна
+        var modal = document.getElementById("editModal");
+        var btn = document.getElementById("openModalBtn");
+        var span = document.getElementsByClassName("close")[0];
+
+        btn.onclick = function() {
+            modal.style.display = "block";
+        }
+
+        span.onclick = function() {
+            modal.style.display = "none";
+        }
+
+        window.onclick = function(event) {
+            if (event.target == modal) {
+                modal.style.display = "none";
+            }
+        }
+    </script>
+
+</body>
+</html>

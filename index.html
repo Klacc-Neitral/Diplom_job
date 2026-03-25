@@ -5,8 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ProgTest - Профиль (MVP)</title>
     <link rel="stylesheet" href="style.css">
-    <!-- VK Bridge будет подгружён динамически, если нужно -->
-    <!-- Telegram SDK подключаем, но он пригодится только в Telegram -->
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -18,35 +16,28 @@
         (function() {
             const output = document.getElementById('output');
             
-            // ---- Функция определения платформы ----
             function detectPlatform() {
-                // 1. Если есть window.vkBridge и он уже готов к отправке команд — это VK
                 if (window.vkBridge && typeof window.vkBridge.send === 'function') {
                     return 'vk';
                 }
-                // 2. Если в URL есть параметры VK
                 if (window.location.search.includes('vk_app_id') || 
                     window.location.hash.includes('vk_platform')) {
                     return 'vk';
                 }
-                // 3. Если есть объект Telegram и его WebApp — это Telegram
                 if (window.Telegram && window.Telegram.WebApp) {
                     return 'telegram';
                 }
-                // 4. Если в URL есть параметры Telegram (на случай, если скрипт ещё не загрузился)
+
                 if (window.location.search.includes('tgWebAppData')) {
                     return 'telegram';
                 }
-                // 5. Иначе браузер
                 return 'browser';
             }
             
             let platform = detectPlatform();
             output.textContent = `Определено окружение: ${platform}\n\n`;
             
-            // ---- Инициализация VK ----
             if (platform === 'vk') {
-                // Если vkBridge ещё не загружен, подгружаем
                 if (!window.vkBridge) {
                     const script = document.createElement('script');
                     script.src = 'https://unpkg.com/@vkontakte/vk-bridge/dist/browser.min.js';
@@ -63,24 +54,21 @@
                     output.textContent += '🔄 Отправляем VKWebAppInit...\n';
                     window.vkBridge.send('VKWebAppInit')
                         .then(() => {
-                            output.textContent += '✅ VKWebAppInit успешно отправлен\n';
-                            // Получаем данные пользователя (если нужно)
+                            output.textContent += 'VKWebAppInit успешно отправлен\n';
                             return window.vkBridge.send('VKWebAppGetUserInfo');
                         })
                         .then(user => {
                             if (user) {
-                                output.textContent += `👤 Пользователь: ${user.first_name} ${user.last_name || ''} (id: ${user.id})\n`;
+                                output.textContent += `Пользователь: ${user.first_name} ${user.last_name || ''} (id: ${user.id})\n`;
                             }
                         })
                         .catch(err => {
-                            output.textContent += `⚠️ Ошибка при инициализации VK: ${err.message || err}\n`;
+                            output.textContent += `Ошибка при инициализации VK: ${err.message || err}\n`;
                         });
                 }
             }
             
-            // ---- Инициализация Telegram ----
             else if (platform === 'telegram') {
-                // Ждём, пока Telegram SDK полностью загрузится
                 const waitForTelegram = setInterval(() => {
                     if (window.Telegram && window.Telegram.WebApp) {
                         clearInterval(waitForTelegram);
@@ -93,32 +81,29 @@
                         const user = tg.initDataUnsafe?.user;
                         if (user) {
                             output.textContent += 
-                                `👤 Пользователь:\n` +
+                                ` Пользователь:\n` +
                                 `  ID: ${user.id}\n` +
                                 `  Имя: ${user.first_name} ${user.last_name || ''}\n` +
                                 `  Username: @${user.username || 'нет'}\n`;
                         } else {
-                            output.textContent += '⚠️ Данные пользователя отсутствуют (возможно, открыто не из Telegram)\n';
+                            output.textContent += 'Данные пользователя отсутствуют (возможно, открыто не из Telegram)\n';
                         }
                     }
                 }, 50);
                 
-                // Таймаут на случай, если Telegram так и не появился
                 setTimeout(() => {
                     if (!window.Telegram || !window.Telegram.WebApp) {
-                        output.textContent += '❌ Telegram SDK не загрузился вовремя\n';
+                        output.textContent += 'Telegram SDK не загрузился вовремя\n';
                     }
                 }, 3000);
             }
             
-            // ---- Браузер ----
             else {
-                output.textContent += '🌐 Приложение запущено в обычном браузере\n';
-                output.textContent += 'ℹ️ Для работы мини-аппа откройте через VK или Telegram\n';
+                output.textContent += 'Приложение запущено в обычном браузере\n';
+                output.textContent += 'Для работы мини-аппа откройте через VK или Telegram\n';
             }
             
-            // ---- Сообщаем, что основной скрипт (main.js) будет загружен ----
-            output.textContent += '\n🔄 Загрузка основного приложения...\n';
+            output.textContent += '\nЗагрузка основного приложения...\n';
         })();
     </script>
     

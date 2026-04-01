@@ -4,15 +4,17 @@ import CourseContentView from "../view/course-content-view.js";
 export default class CourseContentPresenter {
     #container = null;
     #coursesModel = null;
+    #userModel = null;
     #courseData = null;
     #courseContentComponent = null;
 
     #currentPageIndex = 0;
     #coursePages = []; 
 
-    constructor(container, coursesModel, courseData) {
+    constructor(container, coursesModel, userModel, courseData) {
         this.#container = container;
         this.#coursesModel = coursesModel;
+        this.#userModel = userModel;
         this.#courseData = courseData;
         
       

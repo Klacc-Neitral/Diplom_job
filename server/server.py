@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 from psycopg2.extras import RealDictCursor
 
 SERVER_DIR = Path(__file__).resolve().parent
-CLIENT_DIR = SERVER_DIR.parent / "client"
+CLIENT_DIR = SERVER_DIR.parent / "docs"
 if str(SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(SERVER_DIR))
 

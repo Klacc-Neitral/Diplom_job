@@ -31,6 +31,25 @@ function normalizeVkUser(user) {
   };
 }
 
+function tryInitTelegram() {
+  const tg = window.Telegram?.WebApp;
+  const user = tg?.initDataUnsafe?.user;
+
+  if (!user) {
+    return null;
+  }
+
+  if (typeof tg.ready === "function") {
+    tg.ready();
+  }
+
+  if (typeof tg.expand === "function") {
+    tg.expand();
+  }
+
+  return normalizeTelegramUser(user);
+}
+
 async function tryInitVk() {
   const bridge = window.vkBridge;
   if (!bridge || typeof bridge.send !== "function") {
@@ -43,6 +62,7 @@ async function tryInitVk() {
     if (!user || user.id == null) {
       return null;
     }
+
     return normalizeVkUser(user);
   } catch {
     return null;
@@ -50,22 +70,24 @@ async function tryInitVk() {
 }
 
 export async function initPlatform() {
-  const telegramUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
-  if (telegramUser?.id != null) {
-    const tg = window.Telegram.WebApp;
-    if (typeof tg.ready === "function") {
-      tg.ready();
-    }
-    if (typeof tg.expand === "function") {
-      tg.expand();
-    }
-    return normalizeTelegramUser(telegramUser);
+  const telegramUser = tryInitTelegram();
+  if (telegramUser) {
+    return {
+      context: "telegram",
+      user: telegramUser,
+    };
   }
 
   const vkUser = await tryInitVk();
   if (vkUser) {
-    return vkUser;
+    return {
+      context: "vk",
+      user: vkUser,
+    };
   }
 
-  return createGuestUser();
+  return {
+    context: "browser",
+    user: createGuestUser(),
+  };
 }

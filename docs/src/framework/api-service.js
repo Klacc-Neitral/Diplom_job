@@ -26,6 +26,48 @@ export default class ApiService {
         return ApiService.parseResponse(response);
     }
 
+    async authWithTelegram(user) {
+        const response = await this.#load({
+            url: "auth/telegram",
+            method: Method.POST,
+            body: JSON.stringify(user),
+            headers: new Headers({ "Content-Type": "application/json" }),
+        });
+
+        return ApiService.parseResponse(response);
+    }
+
+    async login(credentials) {
+        const response = await this.#load({
+            url: "auth/login",
+            method: Method.POST,
+            body: JSON.stringify(credentials),
+            headers: new Headers({ "Content-Type": "application/json" }),
+        });
+
+        return ApiService.parseResponse(response);
+    }
+
+    async register(payload) {
+        const response = await this.#load({
+            url: "auth/register",
+            method: Method.POST,
+            body: JSON.stringify(payload),
+            headers: new Headers({ "Content-Type": "application/json" }),
+        });
+
+        return ApiService.parseResponse(response);
+    }
+
+    async getCurrentUser() {
+        const response = await this.#load({
+            url: "auth/me",
+            method: Method.GET,
+        });
+
+        return ApiService.parseResponse(response);
+    }
+
     async updateUser(user) {
         const response = await this.#load({
             url: `users/${this.#getUserId()}/profile`,
@@ -59,7 +101,15 @@ export default class ApiService {
     }
 
     #getUserId() {
-        return this.#userModel.getUser()?.user_id;
+        return this.#userModel?.getUser?.()?.user_id;
+    }
+
+    #getAuthToken() {
+        try {
+            return window.localStorage.getItem("auth_token");
+        } catch {
+            return null;
+        }
     }
 
     async #load({
@@ -68,14 +118,31 @@ export default class ApiService {
         body = null,
         headers = new Headers(),
     }) {
+        const token = this.#getAuthToken();
+        if (token && !headers.has("Authorization")) {
+            headers.set("Authorization", `Bearer ${token}`);
+        }
+
         const response = await fetch(`${this.#endPoint}/${url}`, { method, body, headers });
         if (!response.ok) {
-            throw new Error(`${response.status}: ${response.statusText}`);
+            const error = new Error(await ApiService.parseError(response));
+            error.status = response.status;
+            throw error;
         }
+
         return response;
     }
 
     static parseResponse(response) {
         return response.json();
+    }
+
+    static async parseError(response) {
+        try {
+            const payload = await response.json();
+            return payload.error || `${response.status}: ${response.statusText}`;
+        } catch {
+            return `${response.status}: ${response.statusText}`;
+        }
     }
 }

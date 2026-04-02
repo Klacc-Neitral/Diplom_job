@@ -70,24 +70,34 @@ async function tryInitVk() {
 }
 
 export async function initPlatform() {
-  const telegramUser = tryInitTelegram();
-  if (telegramUser) {
+  try {
+    const tg = window.Telegram?.WebApp;
+    if (
+      tg &&
+      tg.initDataUnsafe &&
+      tg.initDataUnsafe.user &&
+      tg.initDataUnsafe.user.id
+    ) {
+      return {
+        context: "telegram",
+        user: {
+          user_id: `tg_${tg.initDataUnsafe.user.id}`,
+          first_name: tg.initDataUnsafe.user.first_name || "",
+          last_name: tg.initDataUnsafe.user.last_name || "",
+          username: tg.initDataUnsafe.user.username || "",
+        },
+      };
+    }
+
     return {
-      context: "telegram",
-      user: telegramUser,
+      context: "guest",
+    };
+
+  } catch (e) {
+    console.error("initPlatform error:", e);
+
+    return {
+      context: "guest",
     };
   }
-
-  const vkUser = await tryInitVk();
-  if (vkUser) {
-    return {
-      context: "vk",
-      user: vkUser,
-    };
-  }
-
-  return {
-    context: "browser",
-    user: createGuestUser(),
-  };
 }

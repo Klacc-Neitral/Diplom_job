@@ -618,9 +618,6 @@ function renderAuthScreen(apiService) {
 async function mountAuthenticatedApp(user) {
   renderLoadingScreen("Загружаем профиль и курсы...");
 
-  document.body.className = "";
-  document.body.innerHTML = "";
-
   const bodyElement = document.body;
   const userModel = new UserModel();
   userModel.setUser(user);
@@ -645,6 +642,9 @@ async function mountAuthenticatedApp(user) {
 
     throw error;
   }
+
+  document.body.className = "";
+  document.body.innerHTML = "";
 
   profilePresenter.init();
 }

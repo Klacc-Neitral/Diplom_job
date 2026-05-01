@@ -1,12 +1,36 @@
 import { AbstractComponent } from "../framework/view/abstract-component.js";
 
+function normalizeImageUrl(value) {
+    const source = String(value ?? "").trim();
+
+    if (!source) {
+        return "";
+    }
+
+    if (
+        source.startsWith("http://") ||
+        source.startsWith("https://") ||
+        source.startsWith("data:") ||
+        source.startsWith("/")
+    ) {
+        return source;
+    }
+
+    if (source.startsWith("./")) {
+        return `/${source.slice(2)}`;
+    }
+
+    return `/${source}`;
+}
+
 function createCourseCardTemplate(course) {
     const { title, percent, img, action } = course;
     const btnClass = percent === 0 ? "btn-start" : "";
+    const imageUrl = normalizeImageUrl(img);
     
 
     return (
-        `<div class="course-card" style="background-image: linear-gradient(rgba(0,0,0,0.4), rgba(0,0,0,0.1) 40%, rgba(0,0,0,0.7) 100%), url('${img}');">
+        `<div class="course-card" style="background-image: linear-gradient(rgba(0,0,0,0.4), rgba(0,0,0,0.1) 40%, rgba(0,0,0,0.7) 100%), url('${imageUrl}');">
             <div class="course-card-category">${title}</div>
             <div class="course-card-footer">
                 <div class="progress-container">

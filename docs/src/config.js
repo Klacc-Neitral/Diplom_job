@@ -1,8 +1,6 @@
-// Вставьте сюда URL вашего backend на Render.
-// Пример:
-// const serverUrl = "https://your-service.onrender.com";
-const serverUrl = "https://your-service.onrender.com";
-const apiBaseUrl = `${serverUrl}/api`;
+const runtimeConfig = window.APP_CONFIG ?? {};
+const serverUrl = (runtimeConfig.serverUrl || window.location.origin).replace(/\/$/, "");
+const apiBaseUrl = (runtimeConfig.apiBaseUrl || `${serverUrl}/api`).replace(/\/$/, "");
 
 export const APP_CONFIG = {
     serverUrl,

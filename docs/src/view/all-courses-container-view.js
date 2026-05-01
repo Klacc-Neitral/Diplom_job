@@ -5,7 +5,7 @@ function createAllCoursesTemplate() {
         `<section class="all-courses-view">
             <div class="all-courses-header">
                 <div class="motivation-box">
-                    <p>Развивай свои навыки программирования. Выбери новые курсы, чтобы углубить свои знания.</p>
+                    <p>Развивай свои навыки. Выбери новые курсы, чтобы углубить свои знания.</p>
                 </div>
             </div>
             <div class="all-courses-list"></div>
@@ -19,6 +19,6 @@ export default class AllCoursesContainerView extends AbstractComponent {
     }
 
     getListContainer() {
-        return this.element.querySelector('.all-courses-list');
+        return this.element.querySelector(".all-courses-list");
     }
 }

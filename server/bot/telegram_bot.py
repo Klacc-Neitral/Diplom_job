@@ -1,19 +1,25 @@
 import json
+import os
 import time
 import urllib.request
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+from server.logging_utils import get_logger, log_call
 
 
-# 1) Вставьте сюда токен от BotFather, например: "123456:ABC-DEF..."
-BOT_TOKEN = "8333931915:AAFYWlMTinj6-KyUsF7SkTcvHuIKDUJSJYE"
+ROOT_DIR = Path(__file__).resolve().parents[2]
+load_dotenv(ROOT_DIR / ".env")
 
-# 2) Вставьте сюда HTTPS-ссылку на ваше мини-приложение (Web App)
-# Например: "https://example.com/index.html"
-MINI_APP_URL = ""
+logger = get_logger("progtest.telegram_bot")
 
-
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+MINI_APP_URL = (os.environ.get("MINI_APP_URL") or os.environ.get("PUBLIC_WEB_URL") or "").strip()
 API_BASE = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 
+@log_call(logger)
 def tg(method: str, payload: dict | None = None) -> dict:
     data = json.dumps(payload or {}).encode("utf-8")
     req = urllib.request.Request(
@@ -30,17 +36,18 @@ def tg(method: str, payload: dict | None = None) -> dict:
     return result["result"]
 
 
+@log_call(logger)
 def send_mini_app_button(chat_id: int) -> None:
     tg(
         "sendMessage",
         {
             "chat_id": chat_id,
-            "text": "Нажмите кнопку, чтобы открыть мини‑приложение:",
+            "text": "Нажмите кнопку, чтобы открыть мини-приложение:",
             "reply_markup": {
                 "inline_keyboard": [
                     [
                         {
-                            "text": "Открыть мини‑приложение",
+                            "text": "Открыть мини-приложение",
                             "web_app": {"url": MINI_APP_URL},
                         }
                     ]
@@ -50,9 +57,10 @@ def send_mini_app_button(chat_id: int) -> None:
     )
 
 
+@log_call(logger)
 def main() -> None:
     if not BOT_TOKEN or not MINI_APP_URL:
-        print("Ошибка: заполните BOT_TOKEN и MINI_APP_URL в bot/telegram_bot.py")
+        print("Ошибка: заполните TELEGRAM_BOT_TOKEN и MINI_APP_URL в .env")
         return
 
     tg("getMe")
@@ -80,4 +88,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -1,0 +1,94 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: progtest_postgres
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - progtest_network
+
+  flask_app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: progtest_flask
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: 8000
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB}
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./server:/app/server
+      - ./docs:/app/docs
+    ports:
+      - "127.0.0.1:8000:8000"
+    networks:
+      - progtest_network
+
+  max_bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: progtest_max_bot
+    restart: unless-stopped
+    command: ["python", "-m", "server.bot.max_bot"]
+    env_file:
+      - .env
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB}
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./server:/app/server
+      - ./docs:/app/docs
+    networks:
+      - progtest_network
+
+  telegram_bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: progtest_telegram_bot
+    restart: unless-stopped
+    command: ["python", "-m", "server.bot.telegram_bot"]
+    env_file:
+      - .env
+    volumes:
+      - ./server:/app/server
+      - ./docs:/app/docs
+    networks:
+      - progtest_network
+
+networks:
+  progtest_network:
+    driver: bridge
+
+volumes:
+  postgres_data:

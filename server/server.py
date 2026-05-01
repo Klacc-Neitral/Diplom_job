@@ -1,29 +1,36 @@
 import json
+import hashlib
+import hmac
 import os
-import sys
+import random
+import smtplib
+import ssl
 import time
 import uuid
-from functools import partial
+import urllib.parse
+from datetime import datetime, timezone
+from email.message import EmailMessage
 from http import HTTPStatus
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
 
 import bcrypt
 import jwt
+from dotenv import load_dotenv
+from flask import Flask, jsonify, request, send_from_directory
 from psycopg2.extras import RealDictCursor
 
-SERVER_DIR = Path(__file__).resolve().parent
-if str(SERVER_DIR) not in sys.path:
-    sys.path.insert(0, str(SERVER_DIR))
-
-from db import get_connection
+try:
+    from server.db import get_connection
+    from server.logging_utils import get_logger, log_call
+except ImportError:  # pragma: no cover - fallback for direct local execution
+    from db import get_connection
+    from logging_utils import get_logger, log_call
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 CLIENT_DIR = ROOT_DIR / "docs"
 JWT_ALGORITHM = "HS256"
-JWT_EXPIRES_IN_SECONDS = int(os.environ.get("JWT_EXPIRES_IN_SECONDS", "604800"))
+logger = get_logger("progtest.server")
 SCHEMA_STATEMENTS = [
     """
     CREATE TABLE IF NOT EXISTS users (
@@ -33,6 +40,10 @@ SCHEMA_STATEMENTS = [
         platform TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
+    """,
+    """
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS avatar_url TEXT
     """,
     """
     CREATE TABLE IF NOT EXISTS courses (
@@ -52,6 +63,10 @@ SCHEMA_STATEMENTS = [
         content TEXT,
         "order" INTEGER NOT NULL
     )
+    """,
+    """
+    ALTER TABLE lessons
+    ADD COLUMN IF NOT EXISTS video_url TEXT
     """,
     """
     CREATE TABLE IF NOT EXISTS enrollments (
@@ -84,6 +99,18 @@ SCHEMA_STATEMENTS = [
     )
     """,
     """
+    ALTER TABLE quiz_questions
+    ADD COLUMN IF NOT EXISTS quiz_type TEXT DEFAULT 'lesson'
+    """,
+    """
+    ALTER TABLE quiz_questions
+    ADD COLUMN IF NOT EXISTS lesson_order INTEGER
+    """,
+    """
+    ALTER TABLE quiz_questions
+    ADD COLUMN IF NOT EXISTS question_order INTEGER DEFAULT 1
+    """,
+    """
     CREATE TABLE IF NOT EXISTS quiz_results (
         id SERIAL PRIMARY KEY,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -95,6 +122,18 @@ SCHEMA_STATEMENTS = [
     )
     """,
     """
+    ALTER TABLE quiz_results
+    ADD COLUMN IF NOT EXISTS quiz_type TEXT DEFAULT 'lesson'
+    """,
+    """
+    ALTER TABLE quiz_results
+    ADD COLUMN IF NOT EXISTS lesson_order INTEGER
+    """,
+    """
+    ALTER TABLE quiz_results
+    ADD COLUMN IF NOT EXISTS answers JSONB
+    """,
+    """
     CREATE TABLE IF NOT EXISTS auth_credentials (
         id SERIAL PRIMARY KEY,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -104,6 +143,25 @@ SCHEMA_STATEMENTS = [
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         CONSTRAINT auth_credentials_user_unique UNIQUE (user_id),
         CONSTRAINT auth_credentials_email_unique UNIQUE (email)
+    )
+    """,
+    """
+    ALTER TABLE auth_credentials
+    ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE
+    """,
+    """
+    UPDATE auth_credentials
+    SET email_verified = TRUE
+    WHERE email_verified = FALSE
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS email_verification_codes (
+        id SERIAL PRIMARY KEY,
+        email TEXT NOT NULL,
+        code_hash TEXT NOT NULL,
+        expires_at TIMESTAMP NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        consumed_at TIMESTAMP
     )
     """,
     """
@@ -131,12 +189,20 @@ SCHEMA_STATEMENTS = [
         ON quiz_questions (course_id)
     """,
     """
+    CREATE INDEX IF NOT EXISTS idx_quiz_questions_scope
+        ON quiz_questions (course_id, quiz_type, lesson_order, question_order)
+    """,
+    """
     CREATE INDEX IF NOT EXISTS idx_quiz_results_user_id
         ON quiz_results (user_id)
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_quiz_results_course_id
         ON quiz_results (course_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_quiz_results_scope
+        ON quiz_results (user_id, course_id, quiz_type, lesson_order, created_at DESC)
     """,
     """
     CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_credentials_email_lower_unique
@@ -146,9 +212,14 @@ SCHEMA_STATEMENTS = [
     CREATE INDEX IF NOT EXISTS idx_auth_credentials_user_id
         ON auth_credentials (user_id)
     """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_email_verification_codes_email
+        ON email_verification_codes (LOWER(email), created_at DESC)
+    """,
 ]
 
 
+@log_call(logger)
 def get_jwt_secret():
     secret = os.environ.get("JWT_SECRET")
     if not secret:
@@ -156,10 +227,246 @@ def get_jwt_secret():
     return secret
 
 
+@log_call(logger)
+def get_jwt_expires_in_seconds():
+    return int(os.environ.get("JWT_EXPIRES_IN_SECONDS", "604800"))
+
+
+@log_call(logger)
+def get_telegram_auth_max_age_seconds():
+    return int(os.environ.get("TELEGRAM_AUTH_MAX_AGE_SECONDS", "86400"))
+
+
+@log_call(logger)
+def get_email_verification_code_ttl_seconds():
+    return int(os.environ.get("EMAIL_VERIFICATION_CODE_TTL_SECONDS", "900"))
+
+
+@log_call(logger)
+def is_email_verification_required():
+    return os.environ.get("EMAIL_VERIFICATION_REQUIRED", "0") == "1"
+
+
+@log_call(logger)
 def normalize_email(email):
     return (email or "").strip().lower()
 
 
+@log_call(logger)
+def validate_password_strength(password):
+    normalized_password = password or ""
+
+    if len(normalized_password) < 8:
+        return "Password must be at least 8 characters long"
+    if not any(char.islower() for char in normalized_password):
+        return "Password must contain at least one lowercase letter"
+    if not any(char.isupper() for char in normalized_password):
+        return "Password must contain at least one uppercase letter"
+    if not any(char.isdigit() for char in normalized_password):
+        return "Password must contain at least one digit"
+    if normalized_password.strip() != normalized_password:
+        return "Password must not start or end with spaces"
+    if not any(not char.isalnum() for char in normalized_password):
+        return "Password must contain at least one special character"
+
+    return None
+
+
+@log_call(logger)
+def get_email_sender_address():
+    return (os.environ.get("SMTP_FROM_EMAIL") or os.environ.get("SMTP_USERNAME") or "").strip()
+
+
+@log_call(logger)
+def is_email_delivery_configured():
+    required_values = [
+        os.environ.get("SMTP_HOST", "").strip(),
+        os.environ.get("SMTP_USERNAME", "").strip(),
+        os.environ.get("SMTP_PASSWORD", "").strip(),
+        get_email_sender_address(),
+    ]
+    return all(required_values)
+
+
+@log_call(logger)
+def generate_email_verification_code():
+    return f"{random.randint(0, 999999):06d}"
+
+
+@log_call(logger)
+def hash_email_verification_code(email, code):
+    normalized_email = normalize_email(email)
+    return hashlib.sha256(f"{normalized_email}:{code}".encode("utf-8")).hexdigest()
+
+
+@log_call(logger)
+def send_email_verification_code(email, code):
+    if not is_email_delivery_configured():
+        raise RuntimeError("SMTP is not configured")
+
+    smtp_host = os.environ.get("SMTP_HOST", "").strip()
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+    smtp_username = os.environ.get("SMTP_USERNAME", "").strip()
+    smtp_password = os.environ.get("SMTP_PASSWORD", "").strip()
+    smtp_sender = get_email_sender_address()
+    smtp_sender_name = (os.environ.get("SMTP_FROM_NAME") or "ProgTest").strip()
+    use_ssl = os.environ.get("SMTP_USE_SSL", "0") == "1"
+
+    message = EmailMessage()
+    message["Subject"] = "Код подтверждения ProgTest"
+    message["From"] = f"{smtp_sender_name} <{smtp_sender}>"
+    message["To"] = normalize_email(email)
+    message.set_content(
+        "\n".join(
+            [
+                "Код подтверждения для регистрации в ProgTest:",
+                "",
+                code,
+                "",
+                f"Код действует {get_email_verification_code_ttl_seconds() // 60} минут.",
+                "Если ты не запрашивал регистрацию, просто проигнорируй это письмо.",
+            ]
+        )
+    )
+
+    ssl_context = ssl.create_default_context()
+    if use_ssl:
+        with smtplib.SMTP_SSL(smtp_host, smtp_port, context=ssl_context, timeout=30) as smtp:
+            smtp.login(smtp_username, smtp_password)
+            smtp.send_message(message)
+        return
+
+    with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as smtp:
+        smtp.starttls(context=ssl_context)
+        smtp.login(smtp_username, smtp_password)
+        smtp.send_message(message)
+
+
+@log_call(logger)
+def issue_email_verification_code(email):
+    normalized_email = normalize_email(email)
+    code = generate_email_verification_code()
+    code_hash = hash_email_verification_code(normalized_email, code)
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE email_verification_codes
+                SET consumed_at = CURRENT_TIMESTAMP
+                WHERE LOWER(email) = LOWER(%s)
+                  AND consumed_at IS NULL
+                """,
+                (normalized_email,),
+            )
+            cur.execute(
+                """
+                INSERT INTO email_verification_codes (email, code_hash, expires_at)
+                VALUES (%s, %s, CURRENT_TIMESTAMP + (%s * INTERVAL '1 second'))
+                """,
+                (normalized_email, code_hash, get_email_verification_code_ttl_seconds()),
+            )
+        conn.commit()
+
+    send_email_verification_code(normalized_email, code)
+
+
+@log_call(logger)
+def verify_email_verification_code(email, code):
+    normalized_email = normalize_email(email)
+    normalized_code = (code or "").strip()
+    expected_hash = hash_email_verification_code(normalized_email, normalized_code)
+
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, code_hash, expires_at
+                FROM email_verification_codes
+                WHERE LOWER(email) = LOWER(%s)
+                  AND consumed_at IS NULL
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (normalized_email,),
+            )
+            row = cur.fetchone()
+
+            if not row:
+                return False, "Verification code not found"
+
+            expires_at = row["expires_at"]
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+            if expires_at <= datetime.now(timezone.utc):
+                return False, "Verification code expired"
+
+            if not hmac.compare_digest(row["code_hash"], expected_hash):
+                return False, "Invalid verification code"
+
+            cur.execute(
+                """
+                UPDATE email_verification_codes
+                SET consumed_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (row["id"],),
+            )
+        conn.commit()
+
+    return True, None
+
+
+@log_call(logger)
+def validate_telegram_init_data(init_data: str):
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token or not init_data:
+        return None
+
+    try:
+        params = dict(urllib.parse.parse_qsl(init_data, strict_parsing=True))
+    except ValueError:
+        return None
+
+    provided_hash = params.pop("hash", None)
+    if not provided_hash:
+        return None
+
+    auth_date_raw = params.get("auth_date")
+    if auth_date_raw:
+        try:
+            auth_date = int(auth_date_raw)
+        except ValueError:
+            return None
+
+        if auth_date < int(time.time()) - get_telegram_auth_max_age_seconds():
+            return None
+
+    data_check_string = "\n".join(
+        f"{key}={value}" for key, value in sorted(params.items())
+    )
+    secret_key = hmac.new(b"WebAppData", token.encode("utf-8"), hashlib.sha256).digest()
+    calculated_hash = hmac.new(
+        secret_key,
+        data_check_string.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(calculated_hash, provided_hash):
+        return None
+
+    user_payload = params.get("user")
+    if not user_payload:
+        return None
+
+    try:
+        return json.loads(user_payload)
+    except json.JSONDecodeError:
+        return None
+
+
+@log_call(logger)
 def ensure_schema():
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -168,23 +475,18 @@ def ensure_schema():
         conn.commit()
 
 
-def get_runtime_api_base_url(headers):
-    configured_url = (
-        os.environ.get("PUBLIC_API_URL")
-        or os.environ.get("API_BASE_URL")
-        or os.environ.get("VITE_API_URL")
-    )
-    if configured_url:
-        configured_url = configured_url.rstrip("/")
-        if configured_url.endswith("/api"):
-            return configured_url
-        return f"{configured_url}/api"
-
-    forwarded_proto = headers.get("X-Forwarded-Proto") or "http"
-    forwarded_host = headers.get("X-Forwarded-Host") or headers.get("Host") or "127.0.0.1:8000"
-    return f"{forwarded_proto}://{forwarded_host}/api"
+@log_call(logger)
+def detect_platform_by_user_id(user_id):
+    if user_id.startswith("tg_"):
+        return "tg"
+    if user_id.startswith("vk_"):
+        return "vk"
+    if user_id.startswith("local_"):
+        return "local"
+    return "guest"
 
 
+@log_call(logger)
 def build_user_payload(user_row):
     name = (user_row.get("name") or "").strip()
     parts = name.split(" ", 1) if name else []
@@ -199,19 +501,33 @@ def build_user_payload(user_row):
         "first_name": first_name,
         "last_name": last_name,
         "username": user_row.get("username"),
-        "avatar_url": None,
+        "avatar_url": user_row.get("avatar_url"),
         "platform": platform,
         "email": user_row.get("email"),
     }
 
 
+@log_call(logger)
+def build_public_user_payload(user_row):
+    user = build_user_payload(user_row)
+    return {
+        "user_id": user["user_id"],
+        "first_name": user["first_name"],
+        "last_name": user["last_name"],
+        "username": user["username"],
+        "avatar_url": user["avatar_url"],
+        "platform": user["platform"],
+    }
+
+
+@log_call(logger)
 def create_auth_response(user_row):
     user = build_user_payload(user_row)
     token = jwt.encode(
         {
             "sub": user["user_id"],
             "platform": user["platform"],
-            "exp": int(time.time()) + JWT_EXPIRES_IN_SECONDS,
+            "exp": int(time.time()) + get_jwt_expires_in_seconds(),
         },
         get_jwt_secret(),
         algorithm=JWT_ALGORITHM,
@@ -219,16 +535,7 @@ def create_auth_response(user_row):
     return {"token": token, "user": user}
 
 
-def detect_platform_by_user_id(user_id):
-    if user_id.startswith("tg_"):
-        return "tg"
-    if user_id.startswith("vk_"):
-        return "vk"
-    if user_id.startswith("local_"):
-        return "local"
-    return "guest"
-
-
+@log_call(logger)
 def course_action(percent):
     if percent >= 100:
         return "Завершено"
@@ -237,103 +544,415 @@ def course_action(percent):
     return "Начать"
 
 
-class AppHandler(SimpleHTTPRequestHandler):
-    def do_OPTIONS(self):
-        self.send_response(HTTPStatus.NO_CONTENT)
-        self._send_cors_headers()
-        self.end_headers()
+@log_call(logger)
+def parse_json_body():
+    payload = request.get_json(silent=True)
+    if isinstance(payload, dict):
+        return payload
+    return {}
 
-    def do_GET(self):
-        parsed = urlparse(self.path)
 
-        if parsed.path == "/app-config.js":
-            self._send_js(
-                f"window.APP_CONFIG = {json.dumps({'apiBaseUrl': get_runtime_api_base_url(self.headers)}, ensure_ascii=False)};"
+@log_call(logger)
+def json_error(message, status):
+    return jsonify({"error": message}), status
+
+
+@log_call(logger)
+def require_auth(expected_user_id=None):
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return None, json_error("Missing auth token", HTTPStatus.UNAUTHORIZED)
+
+    token = auth_header.split(" ", 1)[1].strip()
+    if not token:
+        return None, json_error("Missing auth token", HTTPStatus.UNAUTHORIZED)
+
+    try:
+        payload = jwt.decode(token, get_jwt_secret(), algorithms=[JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        return None, json_error("Token expired", HTTPStatus.UNAUTHORIZED)
+    except jwt.InvalidTokenError:
+        return None, json_error("Invalid auth token", HTTPStatus.UNAUTHORIZED)
+
+    if expected_user_id and payload.get("sub") != expected_user_id:
+        return None, json_error("Forbidden", HTTPStatus.FORBIDDEN)
+
+    return payload, None
+
+
+@log_call(logger)
+def get_total_lessons(course_id):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM lessons WHERE course_id = %s", (course_id,))
+            row = cur.fetchone()
+    return int(row[0]) if row else 0
+
+
+@log_call(logger)
+def upsert_platform_user(user_id, platform, first_name, last_name, username, avatar_url=None):
+    full_name = " ".join(part for part in [first_name, last_name] if part).strip() or "Guest"
+
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                INSERT INTO users (id, name, username, platform, avatar_url)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE
+                SET name = EXCLUDED.name,
+                    username = EXCLUDED.username,
+                    platform = EXCLUDED.platform,
+                    avatar_url = COALESCE(EXCLUDED.avatar_url, users.avatar_url)
+                RETURNING id, name, username, platform, created_at
+                """,
+                (user_id, full_name, username, platform, avatar_url),
             )
-            return
+            cur.execute(
+                """
+                SELECT u.id, u.name, u.username, u.platform, u.avatar_url, u.created_at, a.email
+                FROM users u
+                LEFT JOIN auth_credentials a ON a.user_id = u.id
+                WHERE u.id = %s
+                """,
+                (user_id,),
+            )
+            user_row = cur.fetchone()
+        conn.commit()
 
-        if parsed.path == "/api/health":
-            self._send_json({"ok": True})
-            return
+    return create_auth_response(user_row)
 
-        if parsed.path == "/api/auth/me":
-            claims = self._require_auth()
-            if not claims:
-                return
-            self._handle_auth_me(claims["sub"])
-            return
 
-        if parsed.path.startswith("/api/users/") and parsed.path.endswith("/courses"):
-            user_id = parsed.path.split("/")[3]
-            if not self._require_auth(user_id):
-                return
-            self._handle_get_courses(user_id)
-            return
+QUIZ_PASS_PERCENT = 60
 
-        if parsed.path.startswith("/api/users/") and parsed.path.endswith("/materials"):
-            user_id = parsed.path.split("/")[3]
-            if not self._require_auth(user_id):
-                return
-            self._handle_get_materials(user_id)
-            return
 
-        if parsed.path.startswith("/api/"):
-            self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
-            return
+@log_call(logger)
+def build_quiz_key(quiz_type, lesson_order):
+    normalized_type = quiz_type or "lesson"
+    if normalized_type == "final":
+        return "final"
+    return f"lesson-{int(lesson_order or 0)}"
 
-        super().do_GET()
 
-    def do_POST(self):
-        parsed = urlparse(self.path)
+@log_call(logger)
+def build_quiz_title(quiz_type, lesson_order):
+    normalized_type = quiz_type or "lesson"
+    if normalized_type == "final":
+        return "Финальный экзамен"
+    return f"Мини-тест после урока {int(lesson_order or 0)}"
 
-        if parsed.path == "/api/auth/register":
-            self._handle_register()
-            return
 
-        if parsed.path == "/api/auth/login":
-            self._handle_login()
-            return
+@log_call(logger)
+def build_quiz_description(quiz_type, lesson_order, question_count):
+    normalized_type = quiz_type or "lesson"
+    if normalized_type == "final":
+        return f"Итоговая проверка по курсу: {question_count} вопросов с четырьмя вариантами ответа."
+    return f"Проверь, как ты усвоил урок {int(lesson_order or 0)}. В тесте {question_count} вопросов с четырьмя вариантами ответа."
 
-        if parsed.path == "/api/auth/telegram":
-            self._handle_auth_telegram()
-            return
 
-        if parsed.path == "/api/auth/platform":
-            self._handle_auth_platform()
-            return
+@log_call(logger)
+def serialize_quiz_result(row):
+    if not row:
+        return None
 
-        self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+    score = int(row["score"] or 0)
+    total = int(row["total"] or 0)
+    percent = int(round((score / total) * 100)) if total else 0
 
-    def do_PUT(self):
-        parsed = urlparse(self.path)
+    return {
+        "score": score,
+        "total": total,
+        "percent": percent,
+        "passed": bool(row["passed"]),
+        "quizType": row["quiz_type"] or "lesson",
+        "lessonOrder": row["lesson_order"],
+        "createdAt": row["created_at"].isoformat() if row.get("created_at") else None,
+    }
 
-        if parsed.path.startswith("/api/users/") and parsed.path.endswith("/profile"):
-            user_id = parsed.path.split("/")[3]
-            if not self._require_auth(user_id):
-                return
-            self._handle_update_profile(user_id)
-            return
 
-        if parsed.path.startswith("/api/users/") and "/courses/" in parsed.path:
-            parts = parsed.path.split("/")
-            user_id = parts[3]
-            course_id = parts[5]
-            if not self._require_auth(user_id):
-                return
-            self._handle_update_course_state(user_id, course_id)
-            return
+@log_call(logger)
+def get_course_quiz_bundle(user_id, course_id):
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    course_id,
+                    question,
+                    answers,
+                    COALESCE(quiz_type, 'lesson') AS quiz_type,
+                    lesson_order,
+                    COALESCE(question_order, id) AS question_order
+                FROM quiz_questions
+                WHERE course_id = %s
+                ORDER BY
+                    CASE WHEN COALESCE(quiz_type, 'lesson') = 'final' THEN 1 ELSE 0 END,
+                    COALESCE(lesson_order, 1000000),
+                    COALESCE(question_order, id),
+                    id
+                """,
+                (course_id,),
+            )
+            question_rows = cur.fetchall()
 
-        self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+            cur.execute(
+                """
+                SELECT DISTINCT ON (COALESCE(quiz_type, 'lesson'), COALESCE(lesson_order, -1))
+                    id,
+                    score,
+                    total,
+                    passed,
+                    created_at,
+                    COALESCE(quiz_type, 'lesson') AS quiz_type,
+                    lesson_order
+                FROM quiz_results
+                WHERE user_id = %s
+                  AND course_id = %s
+                ORDER BY
+                    COALESCE(quiz_type, 'lesson'),
+                    COALESCE(lesson_order, -1),
+                    created_at DESC,
+                    id DESC
+                """,
+                (user_id, course_id),
+            )
+            result_rows = cur.fetchall()
 
-    def _handle_register(self):
-        payload = self._read_json()
+    latest_results = {
+        build_quiz_key(row["quiz_type"], row["lesson_order"]): serialize_quiz_result(row)
+        for row in result_rows
+    }
+
+    lesson_quizzes = {}
+    final_quiz = None
+
+    for row in question_rows:
+        quiz_type = row["quiz_type"] or "lesson"
+        lesson_order = row["lesson_order"]
+        quiz_key = build_quiz_key(quiz_type, lesson_order)
+        question = {
+            "id": row["id"],
+            "question": row["question"],
+            "answers": row["answers"] or [],
+            "questionOrder": row["question_order"],
+        }
+
+        if quiz_type == "final":
+            if final_quiz is None:
+                final_quiz = {
+                    "key": quiz_key,
+                    "quizType": "final",
+                    "lessonOrder": None,
+                    "title": build_quiz_title("final", None),
+                    "questions": [],
+                }
+            final_quiz["questions"].append(question)
+            continue
+
+        lesson_order = int(lesson_order or 0)
+        lesson_quizzes.setdefault(
+            lesson_order,
+            {
+                "key": quiz_key,
+                "quizType": "lesson",
+                "lessonOrder": lesson_order,
+                "title": build_quiz_title("lesson", lesson_order),
+                "questions": [],
+            },
+        )
+        lesson_quizzes[lesson_order]["questions"].append(question)
+
+    lesson_quizzes_payload = []
+    for lesson_order in sorted(lesson_quizzes.keys()):
+        quiz = lesson_quizzes[lesson_order]
+        quiz["description"] = build_quiz_description("lesson", lesson_order, len(quiz["questions"]))
+        quiz["lastResult"] = latest_results.get(quiz["key"])
+        lesson_quizzes_payload.append(quiz)
+
+    if final_quiz:
+        final_quiz["description"] = build_quiz_description("final", None, len(final_quiz["questions"]))
+        final_quiz["lastResult"] = latest_results.get(final_quiz["key"])
+
+    return {
+        "lessonQuizzes": lesson_quizzes_payload,
+        "finalQuiz": final_quiz,
+        "passPercent": QUIZ_PASS_PERCENT,
+    }
+
+
+@log_call(logger)
+def normalize_quiz_answers(answers_payload):
+    normalized = {}
+
+    if isinstance(answers_payload, dict):
+        items = answers_payload.items()
+    elif isinstance(answers_payload, list):
+        items = []
+        for item in answers_payload:
+            if not isinstance(item, dict):
+                continue
+            items.append((item.get("questionId"), item.get("answerIndex")))
+    else:
+        items = []
+
+    for raw_question_id, raw_answer_index in items:
+        try:
+            question_id = int(raw_question_id)
+            answer_index = int(raw_answer_index)
+        except (TypeError, ValueError):
+            continue
+        normalized[question_id] = answer_index
+
+    return normalized
+
+
+@log_call(logger)
+def submit_quiz_attempt(user_id, course_id, quiz_type, lesson_order, answers_payload):
+    normalized_quiz_type = (quiz_type or "lesson").strip().lower()
+    if normalized_quiz_type not in {"lesson", "final"}:
+        raise ValueError("Unsupported quiz type")
+
+    normalized_lesson_order = None
+    if normalized_quiz_type == "lesson":
+        normalized_lesson_order = int(lesson_order)
+
+    submitted_answers = normalize_quiz_answers(answers_payload)
+
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if normalized_quiz_type == "final":
+                cur.execute(
+                    """
+                    SELECT id, correct_answer
+                    FROM quiz_questions
+                    WHERE course_id = %s
+                      AND COALESCE(quiz_type, 'lesson') = 'final'
+                    ORDER BY COALESCE(question_order, id), id
+                    """,
+                    (course_id,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id, correct_answer
+                    FROM quiz_questions
+                    WHERE course_id = %s
+                      AND COALESCE(quiz_type, 'lesson') = 'lesson'
+                      AND lesson_order = %s
+                    ORDER BY COALESCE(question_order, id), id
+                    """,
+                    (course_id, normalized_lesson_order),
+                )
+
+            question_rows = cur.fetchall()
+
+            if not question_rows:
+                raise LookupError("Quiz questions not found")
+
+            total = len(question_rows)
+            score = 0
+            correct_question_ids = []
+            incorrect_question_ids = []
+
+            for row in question_rows:
+                question_id = row["id"]
+                selected_answer = submitted_answers.get(question_id)
+                if selected_answer == int(row["correct_answer"]):
+                    score += 1
+                    correct_question_ids.append(question_id)
+                else:
+                    incorrect_question_ids.append(question_id)
+
+            percent = int(round((score / total) * 100)) if total else 0
+            passed = percent >= QUIZ_PASS_PERCENT
+
+            cur.execute(
+                """
+                INSERT INTO quiz_results (
+                    user_id,
+                    course_id,
+                    score,
+                    total,
+                    passed,
+                    quiz_type,
+                    lesson_order,
+                    answers
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                RETURNING id, score, total, passed, created_at, quiz_type, lesson_order
+                """,
+                (
+                    user_id,
+                    course_id,
+                    score,
+                    total,
+                    passed,
+                    normalized_quiz_type,
+                    normalized_lesson_order,
+                    json.dumps(submitted_answers),
+                ),
+            )
+            result_row = cur.fetchone()
+        conn.commit()
+
+    result = serialize_quiz_result(result_row)
+    result["thresholdPercent"] = QUIZ_PASS_PERCENT
+    result["correctQuestionIds"] = correct_question_ids
+    result["incorrectQuestionIds"] = incorrect_question_ids
+    result["submittedCount"] = len(submitted_answers)
+    return result
+
+
+@log_call(logger)
+def create_app():
+    load_dotenv(ROOT_DIR / ".env")
+    get_jwt_secret()
+    if os.environ.get("AUTO_INIT_SCHEMA", "1") == "1":
+        ensure_schema()
+
+    app = Flask(__name__)
+    app.json.ensure_ascii = False
+
+    @app.after_request
+    @log_call(logger)
+    def apply_default_headers(response):
+        response.headers["Access-Control-Allow-Origin"] = os.environ.get("CORS_ALLOW_ORIGIN", "*")
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    @app.route("/api", methods=["OPTIONS"])
+    @app.route("/api/<path:_path>", methods=["OPTIONS"])
+    @log_call(logger)
+    def api_options(_path=None):
+        return ("", HTTPStatus.NO_CONTENT)
+
+    @app.get("/api/health")
+    @app.get("/healthz")
+    @log_call(logger)
+    def healthcheck():
+        return jsonify({"ok": True})
+
+    @app.post("/api/auth/register")
+    @log_call(logger)
+    def register():
+        payload = parse_json_body()
         name = (payload.get("name") or "").strip()
         email = normalize_email(payload.get("email"))
         password = payload.get("password") or ""
+        verification_code = (payload.get("verificationCode") or "").strip()
 
         if not name or not email or not password:
-            self._send_json({"error": "name, email and password are required"}, status=HTTPStatus.BAD_REQUEST)
-            return
+            return json_error("name, email and password are required", HTTPStatus.BAD_REQUEST)
+
+        password_error = validate_password_strength(password)
+        if password_error:
+            return json_error(password_error, HTTPStatus.BAD_REQUEST)
+
+        if is_email_verification_required() and not verification_code:
+            return json_error("verificationCode is required", HTTPStatus.BAD_REQUEST)
 
         with get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -346,9 +965,16 @@ class AppHandler(SimpleHTTPRequestHandler):
                     (email,),
                 )
                 if cur.fetchone():
-                    self._send_json({"error": "Пользователь с таким email уже существует"}, status=HTTPStatus.CONFLICT)
-                    return
+                    return json_error("User with this email already exists", HTTPStatus.CONFLICT)
+            conn.commit()
 
+        if is_email_verification_required():
+            is_code_valid, verification_error = verify_email_verification_code(email, verification_code)
+            if not is_code_valid:
+                return json_error(verification_error or "Invalid verification code", HTTPStatus.BAD_REQUEST)
+
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 user_id = f"local_{uuid.uuid4().hex}"
                 password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
@@ -363,15 +989,15 @@ class AppHandler(SimpleHTTPRequestHandler):
 
                 cur.execute(
                     """
-                    INSERT INTO auth_credentials (user_id, email, password_hash)
-                    VALUES (%s, %s, %s)
+                    INSERT INTO auth_credentials (user_id, email, password_hash, email_verified)
+                    VALUES (%s, %s, %s, TRUE)
                     """,
                     (user_id, email, password_hash),
                 )
 
                 cur.execute(
                     """
-                    SELECT u.id, u.name, u.username, u.platform, u.created_at, a.email
+                    SELECT u.id, u.name, u.username, u.platform, u.avatar_url, u.created_at, a.email
                     FROM users u
                     LEFT JOIN auth_credentials a ON a.user_id = u.id
                     WHERE u.id = %s
@@ -381,16 +1007,83 @@ class AppHandler(SimpleHTTPRequestHandler):
                 user_row = cur.fetchone()
             conn.commit()
 
-        self._send_json(create_auth_response(user_row), status=HTTPStatus.CREATED)
+        return jsonify(create_auth_response(user_row)), HTTPStatus.CREATED
 
-    def _handle_login(self):
-        payload = self._read_json()
+    @app.post("/api/auth/send-verification-code")
+    @log_call(logger)
+    def send_verification_code():
+        payload = parse_json_body()
+        email = normalize_email(payload.get("email"))
+
+        if not email:
+            return json_error("email is required", HTTPStatus.BAD_REQUEST)
+
+        if not is_email_delivery_configured():
+            return json_error("Email delivery is not configured", HTTPStatus.SERVICE_UNAVAILABLE)
+
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM auth_credentials
+                    WHERE LOWER(email) = LOWER(%s)
+                    """,
+                    (email,),
+                )
+                if cur.fetchone():
+                    return json_error("User with this email already exists", HTTPStatus.CONFLICT)
+
+        issue_email_verification_code(email)
+        return jsonify(
+            {
+                "ok": True,
+                "ttlSeconds": get_email_verification_code_ttl_seconds(),
+                "message": "Verification code sent",
+            }
+        )
+
+    @app.get("/api/auth/settings")
+    @log_call(logger)
+    def auth_settings():
+        return jsonify(
+            {
+                "emailVerificationRequired": is_email_verification_required(),
+                "emailDeliveryConfigured": is_email_delivery_configured(),
+                "emailVerificationCodeTtlSeconds": get_email_verification_code_ttl_seconds(),
+            }
+        )
+
+    @app.get("/api/auth/check-email")
+    @log_call(logger)
+    def check_email():
+        email = normalize_email(request.args.get("email"))
+        if not email:
+            return json_error("email is required", HTTPStatus.BAD_REQUEST)
+
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM auth_credentials
+                    WHERE LOWER(email) = LOWER(%s)
+                    """,
+                    (email,),
+                )
+                exists = cur.fetchone() is not None
+
+        return jsonify({"available": not exists})
+
+    @app.post("/api/auth/login")
+    @log_call(logger)
+    def login():
+        payload = parse_json_body()
         email = normalize_email(payload.get("email"))
         password = payload.get("password") or ""
 
         if not email or not password:
-            self._send_json({"error": "email and password are required"}, status=HTTPStatus.BAD_REQUEST)
-            return
+            return json_error("email and password are required", HTTPStatus.BAD_REQUEST)
 
         with get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -401,9 +1094,11 @@ class AppHandler(SimpleHTTPRequestHandler):
                         u.name,
                         u.username,
                         u.platform,
+                        u.avatar_url,
                         u.created_at,
                         a.email,
-                        a.password_hash
+                        a.password_hash,
+                        a.email_verified
                     FROM auth_credentials a
                     JOIN users u ON u.id = a.user_id
                     WHERE LOWER(a.email) = LOWER(%s)
@@ -413,135 +1108,78 @@ class AppHandler(SimpleHTTPRequestHandler):
                 user_row = cur.fetchone()
 
         if not user_row or not bcrypt.checkpw(password.encode("utf-8"), user_row["password_hash"].encode("utf-8")):
-            self._send_json({"error": "Неверный email или пароль"}, status=HTTPStatus.UNAUTHORIZED)
-            return
+            return json_error("Invalid email or password", HTTPStatus.UNAUTHORIZED)
+        if not user_row["email_verified"]:
+            return json_error("Email is not verified", HTTPStatus.FORBIDDEN)
 
-        self._send_json(create_auth_response(user_row))
+        return jsonify(create_auth_response(user_row))
 
-    def _handle_auth_telegram(self):
-        payload = self._read_json()
-        user_id = payload.get("user_id")
-        first_name = (payload.get("first_name") or "").strip()
-        last_name = (payload.get("last_name") or "").strip()
-        username = payload.get("username")
+    @app.post("/api/auth/telegram")
+    @log_call(logger)
+    def auth_telegram():
+        payload = parse_json_body()
+        init_data = (payload.get("init_data") or "").strip()
+        telegram_user = validate_telegram_init_data(init_data)
 
-        if not user_id:
-            self._send_json({"error": "user_id is required"}, status=HTTPStatus.BAD_REQUEST)
-            return
+        if not telegram_user:
+            return json_error("Invalid Telegram init data", HTTPStatus.FORBIDDEN)
 
-        if not str(user_id).startswith("tg_"):
-            user_id = f"tg_{user_id}"
+        user_id = f"tg_{telegram_user['id']}"
+        first_name = (telegram_user.get("first_name") or "").strip()
+        last_name = (telegram_user.get("last_name") or "").strip()
+        username = telegram_user.get("username")
+        avatar_url = telegram_user.get("photo_url")
 
-        self._send_json(self._upsert_platform_user(user_id, "tg", first_name, last_name, username))
+        return jsonify(upsert_platform_user(user_id, "tg", first_name, last_name, username, avatar_url))
 
-    def _handle_auth_platform(self):
-        payload = self._read_json()
+    @app.post("/api/auth/platform")
+    @log_call(logger)
+    def auth_platform():
+        payload = parse_json_body()
         user_id = payload.get("user_id")
         platform = payload.get("platform") or detect_platform_by_user_id(str(user_id or ""))
         first_name = (payload.get("first_name") or "").strip()
         last_name = (payload.get("last_name") or "").strip()
         username = payload.get("username")
+        avatar_url = payload.get("avatar_url")
 
         if not user_id or not platform:
-            self._send_json({"error": "user_id and platform are required"}, status=HTTPStatus.BAD_REQUEST)
-            return
+            return json_error("user_id and platform are required", HTTPStatus.BAD_REQUEST)
 
-        self._send_json(self._upsert_platform_user(str(user_id), platform, first_name, last_name, username))
+        return jsonify(upsert_platform_user(str(user_id), platform, first_name, last_name, username, avatar_url))
 
-    def _upsert_platform_user(self, user_id, platform, first_name, last_name, username):
-        full_name = " ".join(part for part in [first_name, last_name] if part).strip() or "Guest"
+    @app.get("/api/auth/me")
+    @log_call(logger)
+    def auth_me():
+        claims, error_response = require_auth()
+        if error_response:
+            return error_response
 
         with get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(
                     """
-                    INSERT INTO users (id, name, username, platform)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (id) DO UPDATE
-                    SET name = EXCLUDED.name,
-                        username = EXCLUDED.username,
-                        platform = EXCLUDED.platform
-                    RETURNING id, name, username, platform, created_at
-                    """,
-                    (user_id, full_name, username, platform),
-                )
-                cur.execute(
-                    """
-                    SELECT u.id, u.name, u.username, u.platform, u.created_at, a.email
+                    SELECT u.id, u.name, u.username, u.platform, u.avatar_url, u.created_at, a.email
                     FROM users u
                     LEFT JOIN auth_credentials a ON a.user_id = u.id
                     WHERE u.id = %s
                     """,
-                    (user_id,),
-                )
-                user_row = cur.fetchone()
-            conn.commit()
-
-        return create_auth_response(user_row)
-
-    def _handle_update_profile(self, user_id):
-        payload = self._read_json()
-        first_name = (payload.get("first_name") or "").strip()
-        last_name = (payload.get("last_name") or "").strip()
-        username = payload.get("username")
-        platform = payload.get("platform") or detect_platform_by_user_id(user_id)
-        full_name = " ".join(part for part in [first_name, last_name] if part).strip() or "Guest"
-
-        with get_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    """
-                    UPDATE users
-                    SET name = %s,
-                        username = %s,
-                        platform = %s
-                    WHERE id = %s
-                    RETURNING id, name, username, platform, created_at
-                    """,
-                    (full_name, username, platform, user_id),
-                )
-                user_row = cur.fetchone()
-
-                if user_row:
-                    cur.execute(
-                        """
-                        SELECT u.id, u.name, u.username, u.platform, u.created_at, a.email
-                        FROM users u
-                        LEFT JOIN auth_credentials a ON a.user_id = u.id
-                        WHERE u.id = %s
-                        """,
-                        (user_id,),
-                    )
-                    user_row = cur.fetchone()
-            conn.commit()
-
-        if not user_row:
-            self._send_json({"error": "User not found"}, status=HTTPStatus.NOT_FOUND)
-            return
-
-        self._send_json(build_user_payload(user_row))
-
-    def _handle_auth_me(self, user_id):
-        with get_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    """
-                    SELECT u.id, u.name, u.username, u.platform, u.created_at, a.email
-                    FROM users u
-                    LEFT JOIN auth_credentials a ON a.user_id = u.id
-                    WHERE u.id = %s
-                    """,
-                    (user_id,),
+                    (claims["sub"],),
                 )
                 user_row = cur.fetchone()
 
         if not user_row:
-            self._send_json({"error": "User not found"}, status=HTTPStatus.NOT_FOUND)
-            return
+            return json_error("User not found", HTTPStatus.NOT_FOUND)
 
-        self._send_json(build_user_payload(user_row))
+        return jsonify(build_user_payload(user_row))
 
-    def _handle_get_courses(self, user_id):
+    @app.get("/api/users/<user_id>/courses")
+    @log_call(logger)
+    def get_courses(user_id):
+        claims, error_response = require_auth(user_id)
+        if error_response:
+            return error_response
+
         with get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(
@@ -562,7 +1200,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                         ON p.course_id = c.id AND p.user_id = %s
                     ORDER BY c.id
                     """,
-                    (user_id, user_id),
+                    (claims["sub"], claims["sub"]),
                 )
                 rows = cur.fetchall()
 
@@ -582,9 +1220,15 @@ class AppHandler(SimpleHTTPRequestHandler):
                 }
             )
 
-        self._send_json(courses)
+        return jsonify(courses)
 
-    def _handle_get_materials(self, user_id):
+    @app.get("/api/users/<user_id>/materials")
+    @log_call(logger)
+    def get_materials(user_id):
+        _, error_response = require_auth(user_id)
+        if error_response:
+            return error_response
+
         with get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(
@@ -594,6 +1238,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                         c.title AS course_name,
                         l.title AS page_title,
                         l.content,
+                        l.video_url,
                         l."order" AS page_number
                     FROM lessons l
                     JOIN courses c ON c.id = l.course_id
@@ -610,17 +1255,244 @@ class AppHandler(SimpleHTTPRequestHandler):
                     "course_name": row["course_name"],
                     "pageTitle": row["page_title"],
                     "text": row["content"] or "",
+                    "videoUrl": row["video_url"] or "",
                     "pageNumber": row["page_number"],
                 }
             )
 
-        self._send_json(materials)
+        return jsonify(materials)
 
-    def _handle_update_course_state(self, user_id, course_id):
-        payload = self._read_json()
+    @app.get("/api/users/<user_id>/courses/<int:course_id>/quizzes")
+    @log_call(logger)
+    def get_course_quizzes(user_id, course_id):
+        claims, error_response = require_auth(user_id)
+        if error_response:
+            return error_response
+
+        return jsonify(get_course_quiz_bundle(claims["sub"], course_id))
+
+    @app.post("/api/users/<user_id>/courses/<int:course_id>/quizzes/submit")
+    @log_call(logger)
+    def submit_course_quiz(user_id, course_id):
+        claims, error_response = require_auth(user_id)
+        if error_response:
+            return error_response
+
+        payload = parse_json_body()
+        quiz_type = payload.get("quizType")
+        lesson_order = payload.get("lessonOrder")
+        answers = payload.get("answers")
+
+        try:
+            result = submit_quiz_attempt(claims["sub"], course_id, quiz_type, lesson_order, answers)
+        except (TypeError, ValueError) as error:
+            return json_error(str(error), HTTPStatus.BAD_REQUEST)
+        except LookupError:
+            return json_error("Quiz not found", HTTPStatus.NOT_FOUND)
+
+        return jsonify(result), HTTPStatus.CREATED
+
+    @app.get("/api/users/search")
+    @log_call(logger)
+    def search_users():
+        claims, error_response = require_auth()
+        if error_response:
+            return error_response
+
+        query = (request.args.get("q") or "").strip()
+        if not query:
+            return jsonify([])
+
+        search_pattern = f"%{query}%"
+
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        u.id,
+                        u.name,
+                        u.username,
+                        u.platform,
+                        u.avatar_url,
+                        COUNT(DISTINCT e.course_id) AS total_courses,
+                        COUNT(DISTINCT CASE WHEN COALESCE(p.completed, FALSE) THEN p.course_id END) AS completed_courses,
+                        COUNT(DISTINCT CASE
+                            WHEN COALESCE(p.progress_percent, 0) > 0 AND COALESCE(p.completed, FALSE) = FALSE
+                            THEN p.course_id
+                        END) AS in_progress_courses
+                    FROM users u
+                    LEFT JOIN enrollments e ON e.user_id = u.id
+                    LEFT JOIN progress p ON p.user_id = u.id AND p.course_id = e.course_id
+                    WHERE u.id <> %s
+                      AND (
+                          u.name ILIKE %s
+                          OR COALESCE(u.username, '') ILIKE %s
+                      )
+                    GROUP BY u.id, u.name, u.username, u.platform, u.avatar_url
+                    ORDER BY completed_courses DESC, total_courses DESC, u.created_at DESC
+                    LIMIT 20
+                    """,
+                    (claims["sub"], search_pattern, search_pattern),
+                )
+                rows = cur.fetchall()
+
+        return jsonify(
+            [
+                {
+                    **build_public_user_payload(row),
+                    "stats": {
+                        "totalCourses": int(row["total_courses"] or 0),
+                        "completedCourses": int(row["completed_courses"] or 0),
+                        "inProgressCourses": int(row["in_progress_courses"] or 0),
+                    },
+                }
+                for row in rows
+            ]
+        )
+
+    @app.get("/api/users/<target_user_id>/public-profile")
+    @log_call(logger)
+    def get_public_profile(target_user_id):
+        _, error_response = require_auth()
+        if error_response:
+            return error_response
+
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        u.id,
+                        u.name,
+                        u.username,
+                        u.platform,
+                        u.avatar_url,
+                        COUNT(DISTINCT e.course_id) AS total_courses,
+                        COUNT(DISTINCT CASE WHEN COALESCE(p.completed, FALSE) THEN p.course_id END) AS completed_courses,
+                        COUNT(DISTINCT CASE
+                            WHEN COALESCE(p.progress_percent, 0) > 0 AND COALESCE(p.completed, FALSE) = FALSE
+                            THEN p.course_id
+                        END) AS in_progress_courses
+                    FROM users u
+                    LEFT JOIN enrollments e ON e.user_id = u.id
+                    LEFT JOIN progress p ON p.user_id = u.id AND p.course_id = e.course_id
+                    WHERE u.id = %s
+                    GROUP BY u.id, u.name, u.username, u.platform, u.avatar_url
+                    """,
+                    (target_user_id,),
+                )
+                user_row = cur.fetchone()
+
+                if not user_row:
+                    return json_error("User not found", HTTPStatus.NOT_FOUND)
+
+                cur.execute(
+                    """
+                    SELECT
+                        c.id,
+                        c.title,
+                        c.description,
+                        c.level,
+                        c.image,
+                        COALESCE(p.progress_percent, 0) AS progress_percent,
+                        COALESCE(p.completed, FALSE) AS completed
+                    FROM enrollments e
+                    JOIN courses c ON c.id = e.course_id
+                    LEFT JOIN progress p
+                        ON p.user_id = e.user_id
+                       AND p.course_id = e.course_id
+                    WHERE e.user_id = %s
+                    ORDER BY COALESCE(p.completed, FALSE) DESC, COALESCE(p.progress_percent, 0) DESC, c.id DESC
+                    """,
+                    (target_user_id,),
+                )
+                course_rows = cur.fetchall()
+
+        return jsonify(
+            {
+                "user": build_public_user_payload(user_row),
+                "stats": {
+                    "totalCourses": int(user_row["total_courses"] or 0),
+                    "completedCourses": int(user_row["completed_courses"] or 0),
+                    "inProgressCourses": int(user_row["in_progress_courses"] or 0),
+                },
+                "courses": [
+                    {
+                        "id": row["id"],
+                        "title": row["title"],
+                        "desc": row["description"] or "",
+                        "level": row["level"] or "",
+                        "img": row["image"] or "",
+                        "percent": int(row["progress_percent"] or 0),
+                        "completed": bool(row["completed"]),
+                        "action": course_action(int(row["progress_percent"] or 0)),
+                    }
+                    for row in course_rows
+                ],
+            }
+        )
+
+    @app.put("/api/users/<user_id>/profile")
+    @log_call(logger)
+    def update_profile(user_id):
+        _, error_response = require_auth(user_id)
+        if error_response:
+            return error_response
+
+        payload = parse_json_body()
+        first_name = (payload.get("first_name") or "").strip()
+        last_name = (payload.get("last_name") or "").strip()
+        username = payload.get("username")
+        platform = payload.get("platform") or detect_platform_by_user_id(user_id)
+        avatar_url = payload.get("avatar_url")
+        full_name = " ".join(part for part in [first_name, last_name] if part).strip() or "Guest"
+
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    UPDATE users
+                    SET name = %s,
+                        username = %s,
+                        platform = %s,
+                        avatar_url = %s
+                    WHERE id = %s
+                    RETURNING id, name, username, platform, avatar_url, created_at
+                    """,
+                    (full_name, username, platform, avatar_url, user_id),
+                )
+                user_row = cur.fetchone()
+
+                if user_row:
+                    cur.execute(
+                        """
+                    SELECT u.id, u.name, u.username, u.platform, u.avatar_url, u.created_at, a.email
+                    FROM users u
+                    LEFT JOIN auth_credentials a ON a.user_id = u.id
+                    WHERE u.id = %s
+                        """,
+                        (user_id,),
+                    )
+                    user_row = cur.fetchone()
+            conn.commit()
+
+        if not user_row:
+            return json_error("User not found", HTTPStatus.NOT_FOUND)
+
+        return jsonify(build_user_payload(user_row))
+
+    @app.put("/api/users/<user_id>/courses/<int:course_id>")
+    @log_call(logger)
+    def update_course_state(user_id, course_id):
+        _, error_response = require_auth(user_id)
+        if error_response:
+            return error_response
+
+        payload = parse_json_body()
         is_enrolled = bool(payload.get("isEnrolled"))
         percent = int(payload.get("percent", 0))
-        total_lessons = self._get_total_lessons(course_id)
+        total_lessons = get_total_lessons(course_id)
         current_lesson = 0
 
         if total_lessons > 0 and percent > 0:
@@ -653,92 +1525,46 @@ class AppHandler(SimpleHTTPRequestHandler):
                         (user_id, course_id, current_lesson, percent, completed),
                     )
                 else:
-                    cur.execute(
-                        "DELETE FROM progress WHERE user_id = %s AND course_id = %s",
-                        (user_id, course_id),
-                    )
-                    cur.execute(
-                        "DELETE FROM enrollments WHERE user_id = %s AND course_id = %s",
-                        (user_id, course_id),
-                    )
+                    cur.execute("DELETE FROM progress WHERE user_id = %s AND course_id = %s", (user_id, course_id))
+                    cur.execute("DELETE FROM enrollments WHERE user_id = %s AND course_id = %s", (user_id, course_id))
             conn.commit()
 
-        self._send_json({"ok": True})
+        return jsonify({"ok": True})
 
-    def _get_total_lessons(self, course_id):
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    'SELECT COUNT(*) FROM lessons WHERE course_id = %s',
-                    (course_id,),
-                )
-                row = cur.fetchone()
-        return int(row[0]) if row else 0
+    @app.get("/")
+    @log_call(logger)
+    def serve_index():
+        return send_from_directory(CLIENT_DIR, "index.html")
 
-    def _require_auth(self, expected_user_id=None):
-        auth_header = self.headers.get("Authorization") or ""
-        if not auth_header.startswith("Bearer "):
-            self._send_json({"error": "Missing auth token"}, status=HTTPStatus.UNAUTHORIZED)
-            return None
+    @app.get("/<path:path>")
+    @log_call(logger)
+    def serve_static(path):
+        if path.startswith("api/"):
+            return json_error("Not found", HTTPStatus.NOT_FOUND)
 
-        token = auth_header.split(" ", 1)[1].strip()
-        if not token:
-            self._send_json({"error": "Missing auth token"}, status=HTTPStatus.UNAUTHORIZED)
-            return None
+        file_path = CLIENT_DIR / path
+        if file_path.is_file():
+            return send_from_directory(CLIENT_DIR, path)
 
-        try:
-            payload = jwt.decode(token, get_jwt_secret(), algorithms=[JWT_ALGORITHM])
-        except jwt.ExpiredSignatureError:
-            self._send_json({"error": "Token expired"}, status=HTTPStatus.UNAUTHORIZED)
-            return None
-        except jwt.InvalidTokenError:
-            self._send_json({"error": "Invalid auth token"}, status=HTTPStatus.UNAUTHORIZED)
-            return None
+        return send_from_directory(CLIENT_DIR, "index.html")
 
-        if expected_user_id and payload.get("sub") != expected_user_id:
-            self._send_json({"error": "Forbidden"}, status=HTTPStatus.FORBIDDEN)
-            return None
+    @app.errorhandler(404)
+    @log_call(logger)
+    def handle_not_found(_error):
+        if request.path.startswith("/api/"):
+            return json_error("Not found", HTTPStatus.NOT_FOUND)
+        return json_error("Not found", HTTPStatus.NOT_FOUND)
 
-        return payload
-
-    def _read_json(self):
-        length = int(self.headers.get("Content-Length", "0"))
-        raw = self.rfile.read(length) if length else b"{}"
-        return json.loads(raw.decode("utf-8"))
-
-    def _send_json(self, payload, status=HTTPStatus.OK):
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self._send_cors_headers()
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _send_js(self, source, status=HTTPStatus.OK):
-        body = source.encode("utf-8")
-        self.send_response(status)
-        self._send_cors_headers()
-        self.send_header("Content-Type", "application/javascript; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _send_cors_headers(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+    return app
 
 
+app = create_app()
+
+
+@log_call(logger)
 def run():
-    get_jwt_secret()
-    port = int(os.environ.get("PORT", 8000))
-    server = ThreadingHTTPServer(
-        ("0.0.0.0", port),
-        partial(AppHandler, directory=str(CLIENT_DIR)),
-    )
-    print(f"Server started at http://0.0.0.0:{port}")
-    server.serve_forever()
+    port = int(os.environ.get("PORT", "8000"))
+    app.run(host="0.0.0.0", port=port)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,94 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: progtest_postgres
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: progtest_local
+      POSTGRES_USER: progtest_local
+      POSTGRES_PASSWORD: progtest_local_pass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U progtest_local -d progtest_local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - web
+
+  flask_app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: progtest_flask
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: 8000
+      PGHOST: progtest_postgres
+      PGPORT: 5432
+      PGDATABASE: progtest_local
+      PGUSER: progtest_local
+      PGPASSWORD: progtest_local_pass
+      DATABASE_URL: postgresql://progtest_local:progtest_local_pass@progtest_postgres:5432/progtest_local
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./server:/app/server
+      - ./docs:/app/docs
+    ports:
+      - "8000:8000"
+    networks:
+      - web
+
+  max_bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: progtest_max_bot
+    restart: unless-stopped
+    command: ["python", "-m", "server.bot.max_bot"]
+    env_file:
+      - .env
+    environment:
+      PGHOST: progtest_postgres
+      PGPORT: 5432
+      PGDATABASE: progtest_local
+      PGUSER: progtest_local
+      PGPASSWORD: progtest_local_pass
+      DATABASE_URL: postgresql://progtest_local:progtest_local_pass@progtest_postgres:5432/progtest_local
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./server:/app/server
+      - ./docs:/app/docs
+    networks:
+      - web
+
+  telegram_bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: progtest_telegram_bot
+    restart: unless-stopped
+    command: ["python", "-m", "server.bot.telegram_bot"]
+    env_file:
+      - .env
+    volumes:
+      - ./server:/app/server
+      - ./docs:/app/docs
+    networks:
+      - web
+
+networks:
+  web:
+    external: true
+
+volumes:
+  postgres_data:

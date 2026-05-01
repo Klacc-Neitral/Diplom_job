@@ -2,7 +2,13 @@ import os
 
 import psycopg2
 
+from server.logging_utils import get_logger, log_call
 
+
+logger = get_logger("progtest.db")
+
+
+@log_call(logger)
 def get_connection():
     database_url = os.environ.get("DATABASE_URL")
     if database_url:

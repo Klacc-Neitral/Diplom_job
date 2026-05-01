@@ -1,14 +1,3 @@
-function createGuestUser() {
-  return {
-    user_id: `guest_${Date.now()}`,
-    first_name: "Guest",
-    last_name: "",
-    username: null,
-    avatar_url: null,
-    platform: "guest",
-  };
-}
-
 function normalizeTelegramUser(user) {
   return {
     user_id: `tg_${user.id}`,
@@ -31,11 +20,25 @@ function normalizeVkUser(user) {
   };
 }
 
+function hasVkLaunchParams() {
+  const rawQuery = `${window.location.search || ""}&${window.location.hash || ""}`;
+  return /vk_(app_id|platform|user_id)=|(^|[?&#])sign=/.test(rawQuery);
+}
+
+function withTimeout(promise, timeoutMs = 1500) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      window.setTimeout(() => reject(new Error("VK init timeout")), timeoutMs);
+    }),
+  ]);
+}
+
 function tryInitTelegram() {
   const tg = window.Telegram?.WebApp;
   const user = tg?.initDataUnsafe?.user;
 
-  if (!user) {
+  if (!tg || !user || !user.id) {
     return null;
   }
 
@@ -47,23 +50,33 @@ function tryInitTelegram() {
     tg.expand();
   }
 
-  return normalizeTelegramUser(user);
+  return {
+    context: "telegram",
+    user: {
+      ...normalizeTelegramUser(user),
+      init_data: tg.initData || "",
+    },
+  };
 }
 
 async function tryInitVk() {
   const bridge = window.vkBridge;
-  if (!bridge || typeof bridge.send !== "function") {
+  if (!bridge || typeof bridge.send !== "function" || !hasVkLaunchParams()) {
     return null;
   }
 
   try {
-    await bridge.send("VKWebAppInit");
-    const user = await bridge.send("VKWebAppGetUserInfo");
+    await withTimeout(bridge.send("VKWebAppInit"));
+    const user = await withTimeout(bridge.send("VKWebAppGetUserInfo"));
+
     if (!user || user.id == null) {
       return null;
     }
 
-    return normalizeVkUser(user);
+    return {
+      context: "vk",
+      user: normalizeVkUser(user),
+    };
   } catch {
     return null;
   }
@@ -71,28 +84,19 @@ async function tryInitVk() {
 
 export async function initPlatform() {
   try {
-    const tg = window.Telegram?.WebApp;
-    if (
-      tg &&
-      tg.initDataUnsafe &&
-      tg.initDataUnsafe.user &&
-      tg.initDataUnsafe.user.id
-    ) {
-      return {
-        context: "telegram",
-        user: {
-          user_id: `tg_${tg.initDataUnsafe.user.id}`,
-          first_name: tg.initDataUnsafe.user.first_name || "",
-          last_name: tg.initDataUnsafe.user.last_name || "",
-          username: tg.initDataUnsafe.user.username || "",
-        },
-      };
+    const telegramState = tryInitTelegram();
+    if (telegramState) {
+      return telegramState;
+    }
+
+    const vkState = await tryInitVk();
+    if (vkState) {
+      return vkState;
     }
 
     return {
       context: "guest",
     };
-
   } catch (e) {
     console.error("initPlatform error:", e);
 

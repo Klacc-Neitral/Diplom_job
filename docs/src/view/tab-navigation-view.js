@@ -5,12 +5,12 @@ function createTabNavTemplate() {
         `<div class="profile-tabs-wrapper">
             <button class="tab-label active" data-tab="my-courses">Мои курсы</button>
             <button class="tab-label" data-tab="all-courses">Все курсы</button>
+            <button class="tab-label" data-tab="people">Люди</button>
         </div>`
     );
 }
 
 export default class TabNavigationView extends AbstractComponent {
-
     _callback = {};
 
     get template() {
@@ -19,17 +19,19 @@ export default class TabNavigationView extends AbstractComponent {
 
     setTabClickHandler(callback) {
         this._callback.tabClick = callback;
-        
-        this.element.querySelectorAll('.tab-label').forEach(tab => {
-            tab.addEventListener('click', (evt) => {
-                evt.preventDefault();
-                
 
-                this.element.querySelectorAll('.tab-label').forEach(t => t.classList.remove('active'));
-                evt.target.classList.add('active');
-                
+        this.element.querySelectorAll(".tab-label").forEach((tab) => {
+            tab.addEventListener("click", (evt) => {
+                evt.preventDefault();
+                this.setActiveTab(evt.target.dataset.tab);
                 this._callback.tabClick(evt.target.dataset.tab);
             });
+        });
+    }
+
+    setActiveTab(tabName) {
+        this.element.querySelectorAll(".tab-label").forEach((tab) => {
+            tab.classList.toggle("active", tab.dataset.tab === tabName);
         });
     }
 }

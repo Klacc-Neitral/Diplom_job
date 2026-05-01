@@ -59,6 +59,35 @@ export default class ApiService {
         return ApiService.parseResponse(response);
     }
 
+    async sendVerificationCode(email) {
+        const response = await this.#load({
+            url: "auth/send-verification-code",
+            method: Method.POST,
+            body: JSON.stringify({ email }),
+            headers: new Headers({ "Content-Type": "application/json" }),
+        });
+
+        return ApiService.parseResponse(response);
+    }
+
+    async getAuthSettings() {
+        const response = await this.#load({
+            url: "auth/settings",
+            method: Method.GET,
+        });
+
+        return ApiService.parseResponse(response);
+    }
+
+    async checkEmailAvailability(email) {
+        const response = await this.#load({
+            url: `auth/check-email?email=${encodeURIComponent(email)}`,
+            method: Method.GET,
+        });
+
+        return ApiService.parseResponse(response);
+    }
+
     async getCurrentUser() {
         const response = await this.#load({
             url: "auth/me",
@@ -73,6 +102,44 @@ export default class ApiService {
             url: `users/${this.#getUserId()}/profile`,
             method: Method.PUT,
             body: JSON.stringify(user),
+            headers: new Headers({ "Content-Type": "application/json" }),
+        });
+
+        return ApiService.parseResponse(response);
+    }
+
+    async searchUsers(query) {
+        const response = await this.#load({
+            url: `users/search?q=${encodeURIComponent(query)}`,
+            method: Method.GET,
+        });
+
+        return ApiService.parseResponse(response);
+    }
+
+    async getPublicProfile(userId) {
+        const response = await this.#load({
+            url: `users/${userId}/public-profile`,
+            method: Method.GET,
+        });
+
+        return ApiService.parseResponse(response);
+    }
+
+    async getCourseQuizzes(courseId) {
+        const response = await this.#load({
+            url: `users/${this.#getUserId()}/courses/${courseId}/quizzes`,
+            method: Method.GET,
+        });
+
+        return ApiService.parseResponse(response);
+    }
+
+    async submitCourseQuiz(courseId, payload) {
+        const response = await this.#load({
+            url: `users/${this.#getUserId()}/courses/${courseId}/quizzes/submit`,
+            method: Method.POST,
+            body: JSON.stringify(payload),
             headers: new Headers({ "Content-Type": "application/json" }),
         });
 

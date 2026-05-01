@@ -4,14 +4,11 @@ function createFooterTemplate() {
     return (
         `<footer class="footer">
             <div class="container">
-                <a href="#" class="logo">ProgTest<span class="logo-icon"></span></a>
+                <a href="#my-courses" class="logo" data-action="go-my-courses">ProgTest<span class="logo-icon"></span></a>
                 <nav class="footer-nav">
                     <ul>
-                        <li><a href="#">Курсы</a></li>
-                        <li><a href="#">Миссия</a></li>
-                        <li><a href="#">Эффективность</a></li>
-                        <li><a href="#">Вакансии</a></li>
-                        <li><a href="#">Отзывы</a></li>
+                        <li><a href="#my-courses" data-action="go-my-courses">Курсы</a></li>
+                        <li><a href="#mission" data-page="mission">Миссия</a></li>
                     </ul>
                 </nav>
                 <div class="social-links">
@@ -24,7 +21,29 @@ function createFooterTemplate() {
 }
 
 export default class FooterView extends AbstractComponent {
+    _callback = {};
+
     get template() {
         return createFooterTemplate();
+    }
+
+    setLogoClickHandler(callback) {
+        this._callback.logoClick = callback;
+        this.element.querySelectorAll('[data-action="go-my-courses"]').forEach((link) => {
+            link.addEventListener("click", (evt) => {
+                evt.preventDefault();
+                this._callback.logoClick();
+            });
+        });
+    }
+
+    setPageClickHandler(callback) {
+        this._callback.pageClick = callback;
+        this.element.querySelectorAll("[data-page]").forEach((link) => {
+            link.addEventListener("click", (evt) => {
+                evt.preventDefault();
+                this._callback.pageClick(link.dataset.page);
+            });
+        });
     }
 }

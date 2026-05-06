@@ -108,7 +108,7 @@ def configure_instance() -> None:
         "setSettings",
         {
             "webhookUrl": "",
-            "incomingWebhook": "yes",
+            "incomingWebhook": "no",
             "outgoingWebhook": "no",
             "outgoingMessageWebhook": "no",
             "outgoingAPIMessageWebhook": "no",

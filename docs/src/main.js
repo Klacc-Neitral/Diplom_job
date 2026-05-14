@@ -337,6 +337,10 @@ function renderAuthScreen(apiService) {
   let lastCheckedAvailability = null;
   let verificationCodeSentTo = "";
   let emailVerificationRequired = false;
+  let emailVerificationCodeTtlSeconds = 900;
+  let emailVerificationResendIntervalSeconds = 60;
+  let verificationCountdownUntil = 0;
+  let verificationCountdownTimer = null;
 
   const setActiveTab = (tabName) => {
     tabs.forEach((tabButton) => {
@@ -381,26 +385,78 @@ function renderAuthScreen(apiService) {
     }
   };
 
+  const stopVerificationCountdown = () => {
+    if (verificationCountdownTimer) {
+      window.clearInterval(verificationCountdownTimer);
+      verificationCountdownTimer = null;
+    }
+
+    verificationCountdownUntil = 0;
+  };
+
+  const updateVerificationButtonState = () => {
+    if (!emailVerificationRequired || sendVerificationCodeButton.hidden) {
+      sendVerificationCodeButton.disabled = true;
+      sendVerificationCodeButton.textContent = "Отправить код";
+      return;
+    }
+
+    const secondsLeft = Math.max(Math.ceil((verificationCountdownUntil - Date.now()) / 1000), 0);
+    if (secondsLeft > 0) {
+      sendVerificationCodeButton.disabled = true;
+      sendVerificationCodeButton.textContent = `Повтор через ${secondsLeft}с`;
+      return;
+    }
+
+    sendVerificationCodeButton.disabled = false;
+    sendVerificationCodeButton.textContent = "Отправить код";
+  };
+
+  const startVerificationCountdown = (seconds) => {
+    stopVerificationCountdown();
+
+    if (!seconds || seconds <= 0) {
+      updateVerificationButtonState();
+      return;
+    }
+
+    verificationCountdownUntil = Date.now() + (seconds * 1000);
+    updateVerificationButtonState();
+
+    verificationCountdownTimer = window.setInterval(() => {
+      if (Date.now() >= verificationCountdownUntil) {
+        stopVerificationCountdown();
+      }
+
+      updateVerificationButtonState();
+    }, 1000);
+  };
+
   const applyAuthSettings = (settings = {}) => {
     emailVerificationRequired = Boolean(settings.emailVerificationRequired);
     const emailDeliveryConfigured = Boolean(settings.emailDeliveryConfigured);
+    emailVerificationCodeTtlSeconds = Number(settings.emailVerificationCodeTtlSeconds) || 900;
+    emailVerificationResendIntervalSeconds = Number(settings.emailVerificationResendIntervalSeconds) || 60;
 
     registerVerificationField.hidden = !emailVerificationRequired;
     sendVerificationCodeButton.hidden = !emailVerificationRequired;
 
     if (!emailVerificationRequired) {
+      stopVerificationCountdown();
       setVerificationStatus("");
+      updateVerificationButtonState();
       return;
     }
 
     if (!emailDeliveryConfigured) {
+      stopVerificationCountdown();
       sendVerificationCodeButton.disabled = true;
       setVerificationStatus("Подтверждение почты ещё не настроено на сервере.", "is-error");
       return;
     }
 
-    sendVerificationCodeButton.disabled = false;
-    setVerificationStatus("Сначала отправь код подтверждения на почту.");
+    updateVerificationButtonState();
+    setVerificationStatus(`Сначала отправь код подтверждения на почту. Он действует ${Math.max(Math.round(emailVerificationCodeTtlSeconds / 60), 1)} мин.`);
   };
 
   const validateRegistrationPasswords = ({ showSuccess = false } = {}) => {
@@ -493,16 +549,21 @@ function renderAuthScreen(apiService) {
     setVerificationStatus("Отправляем код подтверждения...", "");
 
     try {
-      await apiService.sendVerificationCode(email);
+      const response = await apiService.sendVerificationCode(email);
       verificationCodeSentTo = email;
+      startVerificationCountdown(Number(response.resendIntervalSeconds) || emailVerificationResendIntervalSeconds);
       setVerificationStatus("Код отправлен. Проверь почту и введи его ниже.", "is-success");
       return true;
     } catch (error) {
       verificationCodeSentTo = "";
+      const retryMatch = String(error.message || "").match(/Please wait (\d+) seconds/i);
+      if (retryMatch) {
+        startVerificationCountdown(Number(retryMatch[1]) || emailVerificationResendIntervalSeconds);
+      }
       setVerificationStatus(error.message || "Не удалось отправить код подтверждения.", "is-error");
       return false;
     } finally {
-      sendVerificationCodeButton.disabled = false;
+      updateVerificationButtonState();
     }
   };
 
@@ -516,7 +577,9 @@ function renderAuthScreen(apiService) {
     verificationCodeSentTo = "";
     setEmailStatus("");
     if (emailVerificationRequired) {
-      setVerificationStatus("Сначала отправь код подтверждения на почту.");
+      stopVerificationCountdown();
+      updateVerificationButtonState();
+      setVerificationStatus(`Сначала отправь код подтверждения на почту. Он действует ${Math.max(Math.round(emailVerificationCodeTtlSeconds / 60), 1)} мин.`);
     }
   });
 

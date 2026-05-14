@@ -243,6 +243,11 @@ def get_email_verification_code_ttl_seconds():
 
 
 @log_call(logger)
+def get_email_verification_resend_interval_seconds():
+    return int(os.environ.get("EMAIL_VERIFICATION_RESEND_INTERVAL_SECONDS", "60"))
+
+
+@log_call(logger)
 def is_email_verification_required():
     return os.environ.get("EMAIL_VERIFICATION_REQUIRED", "0") == "1"
 
@@ -369,6 +374,40 @@ def issue_email_verification_code(email):
         conn.commit()
 
     send_email_verification_code(normalized_email, code)
+
+
+@log_call(logger)
+def get_email_verification_retry_after_seconds(email):
+    normalized_email = normalize_email(email)
+    resend_interval = get_email_verification_resend_interval_seconds()
+
+    if resend_interval <= 0:
+        return 0
+
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT created_at
+                FROM email_verification_codes
+                WHERE LOWER(email) = LOWER(%s)
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (normalized_email,),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        return 0
+
+    created_at = row["created_at"]
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+
+    elapsed_seconds = int((datetime.now(timezone.utc) - created_at).total_seconds())
+    retry_after_seconds = resend_interval - max(elapsed_seconds, 0)
+    return max(retry_after_seconds, 0)
 
 
 @log_call(logger)
@@ -1021,6 +1060,13 @@ def create_app():
         if not is_email_delivery_configured():
             return json_error("Email delivery is not configured", HTTPStatus.SERVICE_UNAVAILABLE)
 
+        retry_after_seconds = get_email_verification_retry_after_seconds(email)
+        if retry_after_seconds > 0:
+            return json_error(
+                f"Please wait {retry_after_seconds} seconds before requesting a new code",
+                HTTPStatus.TOO_MANY_REQUESTS,
+            )
+
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -1039,6 +1085,7 @@ def create_app():
             {
                 "ok": True,
                 "ttlSeconds": get_email_verification_code_ttl_seconds(),
+                "resendIntervalSeconds": get_email_verification_resend_interval_seconds(),
                 "message": "Verification code sent",
             }
         )
@@ -1051,6 +1098,7 @@ def create_app():
                 "emailVerificationRequired": is_email_verification_required(),
                 "emailDeliveryConfigured": is_email_delivery_configured(),
                 "emailVerificationCodeTtlSeconds": get_email_verification_code_ttl_seconds(),
+                "emailVerificationResendIntervalSeconds": get_email_verification_resend_interval_seconds(),
             }
         )
 

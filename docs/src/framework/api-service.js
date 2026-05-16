@@ -146,6 +146,37 @@ export default class ApiService {
         return ApiService.parseResponse(response);
     }
 
+    async getCourseEditorData(courseId) {
+        const response = await this.#load({
+            url: `users/${this.#getUserId()}/courses/${courseId}/editor`,
+            method: Method.GET,
+        });
+
+        return ApiService.parseResponse(response);
+    }
+
+    async createCourse(payload) {
+        const response = await this.#load({
+            url: `users/${this.#getUserId()}/courses`,
+            method: Method.POST,
+            body: JSON.stringify(payload),
+            headers: new Headers({ "Content-Type": "application/json" }),
+        });
+
+        return ApiService.parseResponse(response);
+    }
+
+    async editCourseContent(courseId, payload) {
+        const response = await this.#load({
+            url: `users/${this.#getUserId()}/courses/${courseId}/content`,
+            method: Method.PUT,
+            body: JSON.stringify(payload),
+            headers: new Headers({ "Content-Type": "application/json" }),
+        });
+
+        return ApiService.parseResponse(response);
+    }
+
     get courses() {
         return this.#load({ url: `users/${this.#getUserId()}/courses` })
             .then(ApiService.parseResponse);

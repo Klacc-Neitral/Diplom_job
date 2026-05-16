@@ -56,6 +56,10 @@ SCHEMA_STATEMENTS = [
     )
     """,
     """
+    ALTER TABLE courses
+    ADD COLUMN IF NOT EXISTS creator_user_id TEXT REFERENCES users(id) ON DELETE SET NULL
+    """,
+    """
     CREATE TABLE IF NOT EXISTS lessons (
         id SERIAL PRIMARY KEY,
         course_id INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
@@ -171,6 +175,10 @@ SCHEMA_STATEMENTS = [
     """
     CREATE INDEX IF NOT EXISTS idx_enrollments_user_id
         ON enrollments (user_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_courses_creator_user_id
+        ON courses (creator_user_id)
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_enrollments_course_id
@@ -584,6 +592,457 @@ def course_action(percent):
 
 
 @log_call(logger)
+def serialize_course_row(row, current_user_id=None):
+    percent = int(row.get("progress_percent") or 0)
+    creator_user_id = row.get("creator_user_id")
+
+    payload = {
+        "id": row["id"],
+        "title": row["title"],
+        "desc": row.get("description") or "",
+        "level": row.get("level") or "",
+        "img": row.get("image") or "",
+        "percent": percent,
+        "action": course_action(percent),
+        "creatorUserId": creator_user_id,
+        "isOwner": bool(current_user_id and creator_user_id == current_user_id),
+    }
+
+    if "is_enrolled" in row:
+        payload["isEnrolled"] = bool(row.get("is_enrolled"))
+
+    if "completed" in row:
+        payload["completed"] = bool(row.get("completed"))
+
+    return payload
+
+
+@log_call(logger)
+def serialize_material_row(row):
+    return {
+        "course_id": row["course_id"],
+        "course_name": row["course_name"],
+        "pageTitle": row["page_title"],
+        "text": row.get("content") or "",
+        "videoUrl": row.get("video_url") or "",
+        "pageNumber": row["page_number"],
+    }
+
+
+@log_call(logger)
+def validate_quiz_question_payload(question_payload, question_index, quiz_label):
+    if not isinstance(question_payload, dict):
+        raise ValueError(f"{quiz_label}: вопрос {question_index} заполнен некорректно.")
+
+    question_text = str(question_payload.get("question") or "").strip()
+    answers = question_payload.get("answers")
+    correct_answer = question_payload.get("correctAnswer")
+
+    if len(question_text) < 5 or len(question_text) > 500:
+        raise ValueError(f"{quiz_label}: вопрос {question_index} должен быть длиной от 5 до 500 символов.")
+
+    if not isinstance(answers, list) or len(answers) != 4:
+        raise ValueError(f"{quiz_label}: у вопроса {question_index} должно быть ровно 4 варианта ответа.")
+
+    normalized_answers = []
+    for answer_index, answer_text in enumerate(answers, start=1):
+        normalized_answer = str(answer_text or "").strip()
+        if len(normalized_answer) < 1 or len(normalized_answer) > 300:
+            raise ValueError(
+                f"{quiz_label}: вариант ответа {answer_index} в вопросе {question_index} должен быть от 1 до 300 символов."
+            )
+        normalized_answers.append(normalized_answer)
+
+    try:
+        normalized_correct_answer = int(correct_answer)
+    except (TypeError, ValueError):
+        raise ValueError(f"{quiz_label}: укажи правильный ответ для вопроса {question_index}.")
+
+    if normalized_correct_answer < 0 or normalized_correct_answer > 3:
+        raise ValueError(f"{quiz_label}: правильный ответ в вопросе {question_index} должен быть от 1 до 4.")
+
+    return {
+        "question": question_text,
+        "answers": normalized_answers,
+        "correctAnswer": normalized_correct_answer,
+    }
+
+
+@log_call(logger)
+def validate_course_quizzes_payload(payload, lesson_count):
+    quizzes_payload = payload.get("quizzes") or {}
+    if not isinstance(quizzes_payload, dict):
+        raise ValueError("Блок тестов заполнен некорректно.")
+
+    lesson_quizzes_payload = quizzes_payload.get("lessonQuizzes") or []
+    if not isinstance(lesson_quizzes_payload, list):
+        raise ValueError("Мини-тесты по урокам заполнены некорректно.")
+
+    normalized_lesson_quizzes = []
+    seen_lesson_orders = set()
+
+    for item in lesson_quizzes_payload:
+        if not isinstance(item, dict):
+            raise ValueError("Мини-тест урока заполнен некорректно.")
+
+        try:
+            lesson_order = int(item.get("lessonOrder"))
+        except (TypeError, ValueError):
+            raise ValueError("Укажи, к какому уроку относится мини-тест.")
+
+        if lesson_order < 1 or lesson_order > lesson_count:
+            raise ValueError(f"Мини-тест привязан к несуществующему уроку {lesson_order}.")
+
+        if lesson_order in seen_lesson_orders:
+            raise ValueError(f"Для урока {lesson_order} нельзя создать два отдельных мини-теста.")
+
+        questions_payload = item.get("questions") or []
+        if not isinstance(questions_payload, list):
+            raise ValueError(f"Мини-тест урока {lesson_order} заполнен некорректно.")
+
+        normalized_questions = [
+            validate_quiz_question_payload(question_payload, question_index, f"Мини-тест урока {lesson_order}")
+            for question_index, question_payload in enumerate(questions_payload, start=1)
+        ]
+
+        seen_lesson_orders.add(lesson_order)
+        normalized_lesson_quizzes.append(
+            {
+                "lessonOrder": lesson_order,
+                "questions": normalized_questions,
+            }
+        )
+
+    final_quiz_payload = quizzes_payload.get("finalQuiz") or {}
+    if not isinstance(final_quiz_payload, dict):
+        raise ValueError("Финальный тест заполнен некорректно.")
+
+    final_questions_payload = final_quiz_payload.get("questions") or []
+    if not isinstance(final_questions_payload, list):
+        raise ValueError("Финальный тест заполнен некорректно.")
+
+    normalized_final_questions = [
+        validate_quiz_question_payload(question_payload, question_index, "Финальный тест")
+        for question_index, question_payload in enumerate(final_questions_payload, start=1)
+    ]
+
+    return {
+        "lessonQuizzes": normalized_lesson_quizzes,
+        "finalQuiz": {"questions": normalized_final_questions},
+    }
+
+
+@log_call(logger)
+def validate_course_creation_payload(payload):
+    title = str(payload.get("title") or "").strip()
+    description = str(payload.get("description") or "").strip()
+    level = str(payload.get("level") or "").strip()
+    image = str(payload.get("image") or "").strip()
+    lessons = payload.get("lessons")
+
+    if len(title) < 3 or len(title) > 120:
+        raise ValueError("Укажи название курса от 3 до 120 символов.")
+
+    if len(description) > 2000:
+        raise ValueError("Описание курса не должно превышать 2000 символов.")
+
+    if len(level) > 80:
+        raise ValueError("Уровень курса не должен превышать 80 символов.")
+
+    if len(image) > 2048:
+        raise ValueError("Ссылка на обложку слишком длинная.")
+
+    if not isinstance(lessons, list) or not lessons:
+        raise ValueError("Добавь хотя бы один урок.")
+
+    normalized_lessons = []
+    for index, lesson in enumerate(lessons, start=1):
+        if not isinstance(lesson, dict):
+            raise ValueError(f"Урок {index} заполнен некорректно.")
+
+        lesson_title = str(lesson.get("title") or "").strip()
+        lesson_content = str(lesson.get("content") or "").strip()
+        lesson_video_url = str(lesson.get("videoUrl") or "").strip()
+
+        if len(lesson_title) < 2 or len(lesson_title) > 160:
+            raise ValueError(f"Укажи название урока {index} длиной от 2 до 160 символов.")
+
+        if not lesson_content:
+            raise ValueError(f"Заполни описание урока {index}.")
+
+        if len(lesson_content) > 12000:
+            raise ValueError(f"Описание урока {index} не должно превышать 12000 символов.")
+
+        if len(lesson_video_url) > 2048:
+            raise ValueError(f"Ссылка на видео в уроке {index} слишком длинная.")
+
+        normalized_lessons.append(
+            {
+                "title": lesson_title,
+                "content": lesson_content,
+                "videoUrl": lesson_video_url,
+            }
+        )
+
+    normalized_quizzes = validate_course_quizzes_payload(payload, len(normalized_lessons))
+
+    return {
+        "title": title,
+        "description": description,
+        "level": level,
+        "image": image,
+        "lessons": normalized_lessons,
+        "quizzes": normalized_quizzes,
+    }
+
+
+@log_call(logger)
+def create_course(course_owner_id, payload):
+    course_data = validate_course_creation_payload(payload)
+
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                INSERT INTO courses (title, description, level, image, creator_user_id)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id, title, description, level, image, creator_user_id
+                """,
+                (
+                    course_data["title"],
+                    course_data["description"],
+                    course_data["level"],
+                    course_data["image"],
+                    course_owner_id,
+                ),
+            )
+            course_row = cur.fetchone()
+
+            for lesson_order, lesson in enumerate(course_data["lessons"], start=1):
+                cur.execute(
+                    """
+                    INSERT INTO lessons (course_id, title, content, video_url, "order")
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        course_row["id"],
+                        lesson["title"],
+                        lesson["content"],
+                        lesson["videoUrl"],
+                        lesson_order,
+                    ),
+                )
+
+            insert_course_quiz_questions(cur, course_row["id"], course_data["quizzes"])
+
+            cur.execute(
+                """
+                INSERT INTO enrollments (user_id, course_id)
+                VALUES (%s, %s)
+                ON CONFLICT (user_id, course_id) DO NOTHING
+                """,
+                (course_owner_id, course_row["id"]),
+            )
+            cur.execute(
+                """
+                INSERT INTO progress (user_id, course_id, current_lesson, progress_percent, completed)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (user_id, course_id) DO UPDATE
+                SET current_lesson = EXCLUDED.current_lesson,
+                    progress_percent = EXCLUDED.progress_percent,
+                    completed = EXCLUDED.completed,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (course_owner_id, course_row["id"], 0, 0, False),
+            )
+        conn.commit()
+
+    course_row["is_enrolled"] = True
+    course_row["progress_percent"] = 0
+    course_row["completed"] = False
+
+    materials = [
+        {
+            "course_id": course_row["id"],
+            "course_name": course_row["title"],
+            "page_title": lesson["title"],
+            "content": lesson["content"],
+            "video_url": lesson["videoUrl"],
+            "page_number": lesson_order,
+        }
+        for lesson_order, lesson in enumerate(course_data["lessons"], start=1)
+    ]
+
+    return {
+        "course": serialize_course_row(course_row, current_user_id=course_owner_id),
+        "materials": [serialize_material_row(material) for material in materials],
+    }
+
+
+@log_call(logger)
+def update_course_content(course_owner_id, course_id, payload):
+    course_data = validate_course_creation_payload(payload)
+
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT creator_user_id
+                FROM courses
+                WHERE id = %s
+                """,
+                (course_id,),
+            )
+            existing_course = cur.fetchone()
+
+            if not existing_course:
+                raise LookupError("Course not found")
+
+            if existing_course.get("creator_user_id") != course_owner_id:
+                raise PermissionError("Forbidden")
+
+            cur.execute(
+                """
+                UPDATE courses
+                SET title = %s,
+                    description = %s,
+                    level = %s,
+                    image = %s
+                WHERE id = %s
+                RETURNING id, title, description, level, image, creator_user_id
+                """,
+                (
+                    course_data["title"],
+                    course_data["description"],
+                    course_data["level"],
+                    course_data["image"],
+                    course_id,
+                ),
+            )
+            course_row = cur.fetchone()
+
+            cur.execute("DELETE FROM lessons WHERE course_id = %s", (course_id,))
+            cur.execute("DELETE FROM quiz_questions WHERE course_id = %s", (course_id,))
+            cur.execute("DELETE FROM quiz_results WHERE course_id = %s", (course_id,))
+
+            for lesson_order, lesson in enumerate(course_data["lessons"], start=1):
+                cur.execute(
+                    """
+                    INSERT INTO lessons (course_id, title, content, video_url, "order")
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        course_id,
+                        lesson["title"],
+                        lesson["content"],
+                        lesson["videoUrl"],
+                        lesson_order,
+                    ),
+                )
+
+            insert_course_quiz_questions(cur, course_id, course_data["quizzes"])
+
+            cur.execute(
+                """
+                SELECT
+                    c.id,
+                    c.title,
+                    c.description,
+                    c.level,
+                    c.image,
+                    c.creator_user_id,
+                    CASE WHEN e.id IS NULL THEN FALSE ELSE TRUE END AS is_enrolled,
+                    COALESCE(p.progress_percent, 0) AS progress_percent,
+                    COALESCE(p.completed, FALSE) AS completed
+                FROM courses c
+                LEFT JOIN enrollments e
+                    ON e.course_id = c.id AND e.user_id = %s
+                LEFT JOIN progress p
+                    ON p.course_id = c.id AND p.user_id = %s
+                WHERE c.id = %s
+                """,
+                (course_owner_id, course_owner_id, course_id),
+            )
+            course_row = cur.fetchone()
+        conn.commit()
+
+    materials = [
+        {
+            "course_id": course_id,
+            "course_name": course_data["title"],
+            "page_title": lesson["title"],
+            "content": lesson["content"],
+            "video_url": lesson["videoUrl"],
+            "page_number": lesson_order,
+        }
+        for lesson_order, lesson in enumerate(course_data["lessons"], start=1)
+    ]
+
+    return {
+        "course": serialize_course_row(course_row, current_user_id=course_owner_id),
+        "materials": [serialize_material_row(material) for material in materials],
+    }
+
+
+@log_call(logger)
+def insert_course_quiz_questions(cur, course_id, quizzes_payload):
+    lesson_quizzes = quizzes_payload.get("lessonQuizzes") or []
+    final_quiz = quizzes_payload.get("finalQuiz") or {}
+
+    for lesson_quiz in lesson_quizzes:
+        lesson_order = lesson_quiz["lessonOrder"]
+        for question_order, question in enumerate(lesson_quiz.get("questions") or [], start=1):
+            cur.execute(
+                """
+                INSERT INTO quiz_questions (
+                    course_id,
+                    question,
+                    answers,
+                    correct_answer,
+                    quiz_type,
+                    lesson_order,
+                    question_order
+                )
+                VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s)
+                """,
+                (
+                    course_id,
+                    question["question"],
+                    json.dumps(question["answers"]),
+                    question["correctAnswer"],
+                    "lesson",
+                    lesson_order,
+                    question_order,
+                ),
+            )
+
+    for question_order, question in enumerate(final_quiz.get("questions") or [], start=1):
+        cur.execute(
+            """
+            INSERT INTO quiz_questions (
+                course_id,
+                question,
+                answers,
+                correct_answer,
+                quiz_type,
+                lesson_order,
+                question_order
+            )
+            VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s)
+            """,
+            (
+                course_id,
+                question["question"],
+                json.dumps(question["answers"]),
+                question["correctAnswer"],
+                "final",
+                None,
+                question_order,
+            ),
+        )
+
+
+@log_call(logger)
 def parse_json_body():
     payload = request.get_json(silent=True)
     if isinstance(payload, dict):
@@ -706,6 +1165,108 @@ def serialize_quiz_result(row):
         "quizType": row["quiz_type"] or "lesson",
         "lessonOrder": row["lesson_order"],
         "createdAt": row["created_at"].isoformat() if row.get("created_at") else None,
+    }
+
+
+@log_call(logger)
+def get_course_editor_payload(course_owner_id, course_id):
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, title, description, level, image, creator_user_id
+                FROM courses
+                WHERE id = %s
+                """,
+                (course_id,),
+            )
+            course_row = cur.fetchone()
+
+            if not course_row:
+                raise LookupError("Course not found")
+
+            if course_row.get("creator_user_id") != course_owner_id:
+                raise PermissionError("Forbidden")
+
+            cur.execute(
+                """
+                SELECT
+                    title AS page_title,
+                    content,
+                    video_url,
+                    "order" AS page_number
+                FROM lessons
+                WHERE course_id = %s
+                ORDER BY "order", id
+                """,
+                (course_id,),
+            )
+            lesson_rows = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT
+                    question,
+                    answers,
+                    correct_answer,
+                    COALESCE(quiz_type, 'lesson') AS quiz_type,
+                    lesson_order,
+                    COALESCE(question_order, id) AS question_order
+                FROM quiz_questions
+                WHERE course_id = %s
+                ORDER BY
+                    CASE WHEN COALESCE(quiz_type, 'lesson') = 'final' THEN 1 ELSE 0 END,
+                    COALESCE(lesson_order, 1000000),
+                    COALESCE(question_order, id),
+                    id
+                """,
+                (course_id,),
+            )
+            question_rows = cur.fetchall()
+
+    lesson_quiz_map = {}
+    final_questions = []
+
+    for row in question_rows:
+        question_payload = {
+            "question": row["question"],
+            "answers": row["answers"] or ["", "", "", ""],
+            "correctAnswer": int(row["correct_answer"] or 0),
+        }
+
+        if (row["quiz_type"] or "lesson") == "final":
+            final_questions.append(question_payload)
+            continue
+
+        lesson_order = int(row["lesson_order"] or 0)
+        lesson_quiz_map.setdefault(lesson_order, []).append(question_payload)
+
+    return {
+        "id": course_row["id"],
+        "title": course_row["title"] or "",
+        "description": course_row["description"] or "",
+        "level": course_row["level"] or "",
+        "image": course_row["image"] or "",
+        "lessons": [
+            {
+                "title": row["page_title"] or "",
+                "content": row["content"] or "",
+                "videoUrl": row["video_url"] or "",
+            }
+            for row in lesson_rows
+        ],
+        "quizzes": {
+            "lessonQuizzes": [
+                {
+                    "lessonOrder": lesson_order,
+                    "questions": lesson_quiz_map[lesson_order],
+                }
+                for lesson_order in sorted(lesson_quiz_map.keys())
+            ],
+            "finalQuiz": {
+                "questions": final_questions,
+            },
+        },
     }
 
 
@@ -1238,6 +1799,7 @@ def create_app():
                         c.description,
                         c.level,
                         c.image,
+                        c.creator_user_id,
                         CASE WHEN e.id IS NULL THEN FALSE ELSE TRUE END AS is_enrolled,
                         COALESCE(p.progress_percent, 0) AS progress_percent,
                         COALESCE(p.completed, FALSE) AS completed
@@ -1252,23 +1814,7 @@ def create_app():
                 )
                 rows = cur.fetchall()
 
-        courses = []
-        for row in rows:
-            percent = int(row["progress_percent"] or 0)
-            courses.append(
-                {
-                    "id": row["id"],
-                    "title": row["title"],
-                    "desc": row["description"] or "",
-                    "level": row["level"] or "",
-                    "img": row["image"] or "",
-                    "isEnrolled": bool(row["is_enrolled"]),
-                    "percent": percent,
-                    "action": course_action(percent),
-                }
-            )
-
-        return jsonify(courses)
+        return jsonify([serialize_course_row(row, current_user_id=claims["sub"]) for row in rows])
 
     @app.get("/api/users/<user_id>/materials")
     @log_call(logger)
@@ -1295,20 +1841,7 @@ def create_app():
                 )
                 rows = cur.fetchall()
 
-        materials = []
-        for row in rows:
-            materials.append(
-                {
-                    "course_id": row["course_id"],
-                    "course_name": row["course_name"],
-                    "pageTitle": row["page_title"],
-                    "text": row["content"] or "",
-                    "videoUrl": row["video_url"] or "",
-                    "pageNumber": row["page_number"],
-                }
-            )
-
-        return jsonify(materials)
+        return jsonify([serialize_material_row(row) for row in rows])
 
     @app.get("/api/users/<user_id>/courses/<int:course_id>/quizzes")
     @log_call(logger)
@@ -1318,6 +1851,22 @@ def create_app():
             return error_response
 
         return jsonify(get_course_quiz_bundle(claims["sub"], course_id))
+
+    @app.get("/api/users/<user_id>/courses/<int:course_id>/editor")
+    @log_call(logger)
+    def get_course_editor_data(user_id, course_id):
+        claims, error_response = require_auth(user_id)
+        if error_response:
+            return error_response
+
+        try:
+            payload = get_course_editor_payload(claims["sub"], course_id)
+        except PermissionError:
+            return json_error("Forbidden", HTTPStatus.FORBIDDEN)
+        except LookupError:
+            return json_error("Course not found", HTTPStatus.NOT_FOUND)
+
+        return jsonify(payload)
 
     @app.post("/api/users/<user_id>/courses/<int:course_id>/quizzes/submit")
     @log_call(logger)
@@ -1443,6 +1992,7 @@ def create_app():
                         c.description,
                         c.level,
                         c.image,
+                        c.creator_user_id,
                         COALESCE(p.progress_percent, 0) AS progress_percent,
                         COALESCE(p.completed, FALSE) AS completed
                     FROM enrollments e
@@ -1465,19 +2015,7 @@ def create_app():
                     "completedCourses": int(user_row["completed_courses"] or 0),
                     "inProgressCourses": int(user_row["in_progress_courses"] or 0),
                 },
-                "courses": [
-                    {
-                        "id": row["id"],
-                        "title": row["title"],
-                        "desc": row["description"] or "",
-                        "level": row["level"] or "",
-                        "img": row["image"] or "",
-                        "percent": int(row["progress_percent"] or 0),
-                        "completed": bool(row["completed"]),
-                        "action": course_action(int(row["progress_percent"] or 0)),
-                    }
-                    for row in course_rows
-                ],
+                "courses": [serialize_course_row(row) for row in course_rows],
             }
         )
 
@@ -1529,6 +2067,42 @@ def create_app():
             return json_error("User not found", HTTPStatus.NOT_FOUND)
 
         return jsonify(build_user_payload(user_row))
+
+    @app.post("/api/users/<user_id>/courses")
+    @log_call(logger)
+    def create_user_course(user_id):
+        claims, error_response = require_auth(user_id)
+        if error_response:
+            return error_response
+
+        payload = parse_json_body()
+
+        try:
+            result = create_course(claims["sub"], payload)
+        except ValueError as error:
+            return json_error(str(error), HTTPStatus.BAD_REQUEST)
+
+        return jsonify(result), HTTPStatus.CREATED
+
+    @app.put("/api/users/<user_id>/courses/<int:course_id>/content")
+    @log_call(logger)
+    def edit_user_course(user_id, course_id):
+        claims, error_response = require_auth(user_id)
+        if error_response:
+            return error_response
+
+        payload = parse_json_body()
+
+        try:
+            result = update_course_content(claims["sub"], course_id, payload)
+        except ValueError as error:
+            return json_error(str(error), HTTPStatus.BAD_REQUEST)
+        except PermissionError:
+            return json_error("Forbidden", HTTPStatus.FORBIDDEN)
+        except LookupError:
+            return json_error("Course not found", HTTPStatus.NOT_FOUND)
+
+        return jsonify(result)
 
     @app.put("/api/users/<user_id>/courses/<int:course_id>")
     @log_call(logger)

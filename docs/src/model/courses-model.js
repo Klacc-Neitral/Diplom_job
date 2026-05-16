@@ -26,6 +26,10 @@ export default class CoursesModel {
         }
     }
 
+    getCourse(courseId) {
+        return this.#courses.find((course) => course.id === courseId) ?? null;
+    }
+
     getMyCourses() {
         return this.#courses.filter((course) => course.isEnrolled === true);
     }
@@ -34,9 +38,17 @@ export default class CoursesModel {
         return this.#courses.filter((course) => course.isEnrolled === false);
     }
 
-    getCourseContent(courseTitle) {
+    getCreatedCourses() {
+        return this.#courses.filter((course) => course.isOwner === true);
+    }
+
+    async getEditableCourseDraft(courseId) {
+        return this.#apiService.getCourseEditorData(courseId);
+    }
+
+    getCourseContent(courseId) {
         const content = this.#materials
-            .filter((item) => item.course_name === courseTitle)
+            .filter((item) => item.course_id === courseId)
             .sort((a, b) => a.pageNumber - b.pageNumber);
 
         if (content.length > 0) {
@@ -84,8 +96,18 @@ export default class CoursesModel {
         return result;
     }
 
-    async enrollCourse(courseTitle) {
-        const course = this.#courses.find((item) => item.title === courseTitle);
+    async createCourse(payload) {
+        const response = await this.#apiService.createCourse(payload);
+        return this.#applyCourseResponse(response, "Не удалось создать курс.");
+    }
+
+    async editCreatedCourse(courseId, payload) {
+        const response = await this.#apiService.editCourseContent(courseId, payload);
+        return this.#applyCourseResponse(response, "Не удалось обновить курс.");
+    }
+
+    async enrollCourse(courseId) {
+        const course = this.getCourse(courseId);
         if (!course) {
             return;
         }
@@ -99,8 +121,8 @@ export default class CoursesModel {
         } catch {}
     }
 
-    async removeCourse(courseTitle) {
-        const course = this.#courses.find((item) => item.title === courseTitle);
+    async removeCourse(courseId) {
+        const course = this.getCourse(courseId);
         if (!course) {
             return;
         }
@@ -113,8 +135,8 @@ export default class CoursesModel {
         } catch {}
     }
 
-    async updateCourseProgress(courseTitle, newPercent) {
-        const course = this.#courses.find((item) => item.title === courseTitle);
+    async updateCourseProgress(courseId, newPercent) {
+        const course = this.getCourse(courseId);
         if (!course) {
             return;
         }
@@ -131,5 +153,23 @@ export default class CoursesModel {
         try {
             await this.#apiService.updateCourse(course);
         } catch {}
+    }
+
+    #applyCourseResponse(response, errorMessage) {
+        const course = response?.course;
+        const materials = Array.isArray(response?.materials) ? response.materials : [];
+
+        if (!course) {
+            throw new Error(errorMessage);
+        }
+
+        this.#courses = [course, ...this.#courses.filter((item) => item.id !== course.id)];
+        this.#materials = [
+            ...this.#materials.filter((item) => item.course_id !== course.id),
+            ...materials,
+        ];
+        this.#quizzesByCourseId.delete(course.id);
+
+        return course;
     }
 }

@@ -5,6 +5,7 @@ function createTabNavTemplate() {
         `<div class="profile-tabs-wrapper">
             <button class="tab-label active" data-tab="my-courses">Мои курсы</button>
             <button class="tab-label" data-tab="all-courses">Все курсы</button>
+            <button class="tab-label" data-tab="author-courses">Авторские</button>
             <button class="tab-label" data-tab="people">Люди</button>
         </div>`
     );

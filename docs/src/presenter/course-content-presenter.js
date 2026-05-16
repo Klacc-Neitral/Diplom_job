@@ -20,7 +20,7 @@ export default class CourseContentPresenter {
         this.#coursesModel = coursesModel;
         this.#userModel = userModel;
         this.#courseData = courseData;
-        this.#coursePages = this.#coursesModel.getCourseContent(courseData.title);
+        this.#coursePages = this.#coursesModel.getCourseContent(courseData.id);
 
         const totalPages = this.#coursePages.length;
         if (courseData.percent === 100) {
@@ -219,7 +219,7 @@ export default class CourseContentPresenter {
         }
 
         if (isLastPage) {
-            this.#coursesModel.updateCourseProgress(this.#courseData.title, 100);
+            this.#coursesModel.updateCourseProgress(this.#courseData.id, 100);
             this.#handleBackClick();
             return;
         }
@@ -272,7 +272,7 @@ export default class CourseContentPresenter {
             newProgress = 100;
         }
 
-        await this.#coursesModel.updateCourseProgress(this.#courseData.title, newProgress);
+        await this.#coursesModel.updateCourseProgress(this.#courseData.id, newProgress);
         this.#renderCoursePage();
     }
 }

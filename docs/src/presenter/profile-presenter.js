@@ -8,6 +8,7 @@ import MyCoursesContainerView from "../view/my-courses-container-view.js";
 import MyCourseCardView from "../view/my-course-card-view.js";
 import AllCoursesContainerView from "../view/all-courses-container-view.js";
 import AllCourseCardView from "../view/all-course-card-view.js";
+import AuthorCoursesContainerView from "../view/author-courses-container-view.js";
 import EditModalView from "../view/edit-modal-view.js";
 import FilterView from "../view/filter-view.js";
 import SearchInputView from "../view/search-input-view.js";
@@ -15,6 +16,7 @@ import PeopleDirectoryView from "../view/people-directory-view.js";
 import UserSearchResultView from "../view/user-search-result-view.js";
 import PublicProfileView from "../view/public-profile-view.js";
 import InfoPageView from "../view/info-page-view.js";
+import CreateCourseFormView from "../view/create-course-form-view.js";
 import CourseContentPresenter from "./course-content-presenter.js";
 
 const INFO_PAGES = {
@@ -110,7 +112,9 @@ export default class ProfilePresenter {
     #myCoursesContainerComponent = new MyCoursesContainerView();
     #filterComponent = null;
     #allCoursesContainerComponent = new AllCoursesContainerView();
+    #authorCoursesContainerComponent = new AuthorCoursesContainerView();
     #allCoursesSearchComponent = null;
+    #createCourseFormComponent = null;
     #peopleDirectoryComponent = new PeopleDirectoryView();
     #peopleSearchComponent = new SearchInputView("Найти пользователя по имени или логину...", "people-search");
     #userInfoComponent = null;
@@ -121,6 +125,7 @@ export default class ProfilePresenter {
     #peopleResults = [];
     #selectedPublicProfile = null;
     #selectedPeopleUserId = null;
+    #editingCourseId = null;
     #peopleRequestId = 0;
     #infoPageComponent = null;
     #activeTab = "my-courses";
@@ -216,6 +221,11 @@ export default class ProfilePresenter {
             allCoursesList.innerHTML = "";
         }
 
+        const authorCoursesList = this.#authorCoursesContainerComponent.getListContainer();
+        if (authorCoursesList) {
+            authorCoursesList.innerHTML = "";
+        }
+
         if (this.#selectedPublicProfile) {
             this.#selectedPublicProfile.removeElement();
             this.#selectedPublicProfile = null;
@@ -290,8 +300,12 @@ export default class ProfilePresenter {
         courses.forEach((course) => {
             const courseCard = new MyCourseCardView(course);
 
-            courseCard.setDeleteClickHandler((courseTitle) => {
-                this.#handleDeleteCourse(courseTitle);
+            courseCard.setDeleteClickHandler((courseId) => {
+                this.#handleDeleteCourse(courseId);
+            });
+
+            courseCard.setEditClickHandler((courseId) => {
+                this.#handleEditCourse(courseId);
             });
 
             courseCard.setCourseActionClickHandler((courseData) => {
@@ -307,15 +321,40 @@ export default class ProfilePresenter {
         this.#tabNavigationComponent.setActiveTab(this.#activeTab);
         this.#showFooter();
         this.#clearContent();
+        this.#createCourseFormComponent = null;
 
         const contentContainer = this.#profileContainerComponent.contentContainer;
         render(this.#allCoursesContainerComponent, contentContainer);
+        this.#allCoursesContainerComponent.getSearchSlot().innerHTML = "";
+        this.#allCoursesContainerComponent.getListContainer().innerHTML = "";
 
-        const listContainer = this.#allCoursesContainerComponent.getListContainer();
-        render(this.#allCoursesSearchComponent, listContainer, RenderPosition.BEFOREBEGIN);
+        render(this.#allCoursesSearchComponent, this.#allCoursesContainerComponent.getSearchSlot());
         this.#allCoursesSearchComponent.setValue(this.#allCoursesSearchQuery);
 
         this.#renderAllCoursesList();
+    }
+
+    #renderAuthorCoursesTab() {
+        this.#activeTab = "author-courses";
+        this.#tabNavigationComponent.setActiveTab(this.#activeTab);
+        this.#showFooter();
+        this.#clearContent();
+
+        const contentContainer = this.#profileContainerComponent.contentContainer;
+        render(this.#authorCoursesContainerComponent, contentContainer);
+        this.#authorCoursesContainerComponent.getFormSlot().innerHTML = "";
+        this.#authorCoursesContainerComponent.getListContainer().innerHTML = "";
+
+        this.#createCourseFormComponent = new CreateCourseFormView();
+        render(this.#createCourseFormComponent, this.#authorCoursesContainerComponent.getFormSlot());
+        this.#createCourseFormComponent.setSubmitHandler(this.#handleCreateCourse);
+        this.#createCourseFormComponent.setCancelHandler(this.#handleCourseFormCancel);
+
+        if (this.#editingCourseId) {
+            this.#loadCourseDraftIntoEditor(this.#editingCourseId);
+        }
+
+        this.#renderAuthorCoursesList();
     }
 
     #renderAllCoursesList() {
@@ -337,9 +376,42 @@ export default class ProfilePresenter {
 
         allCourses.forEach((course) => {
             const courseCard = new AllCourseCardView(course);
-            courseCard.setEnrollClickHandler((courseTitle) => {
-                this.#handleEnrollCourse(courseTitle);
+            courseCard.setEnrollClickHandler((courseId) => {
+                this.#handleEnrollCourse(courseId);
             });
+            courseCard.setEditClickHandler((courseId) => {
+                this.#handleEditCourse(courseId);
+            });
+            render(courseCard, listContainer);
+        });
+    }
+
+    #renderAuthorCoursesList() {
+        const listContainer = this.#authorCoursesContainerComponent.getListContainer();
+        listContainer.innerHTML = "";
+
+        const createdCourses = this.#coursesModel.getCreatedCourses();
+
+        if (createdCourses.length === 0) {
+            listContainer.innerHTML = '<p class="empty-state">Ты ещё не создал ни одного курса.</p>';
+            return;
+        }
+
+        createdCourses.forEach((course) => {
+            const courseCard = new MyCourseCardView(course);
+
+            courseCard.setDeleteClickHandler((courseId) => {
+                this.#handleDeleteCourse(courseId);
+            });
+
+            courseCard.setEditClickHandler((courseId) => {
+                this.#handleEditCourse(courseId);
+            });
+
+            courseCard.setCourseActionClickHandler((courseData) => {
+                this.#handleCourseAction(courseData);
+            });
+
             render(courseCard, listContainer);
         });
     }
@@ -352,6 +424,9 @@ export default class ProfilePresenter {
 
         const contentContainer = this.#profileContainerComponent.contentContainer;
         render(this.#peopleDirectoryComponent, contentContainer);
+        this.#peopleDirectoryComponent.searchSlot.innerHTML = "";
+        this.#peopleDirectoryComponent.resultsContainer.innerHTML = "";
+        this.#peopleDirectoryComponent.profileSlot.innerHTML = "";
         render(this.#peopleSearchComponent, this.#peopleDirectoryComponent.searchSlot);
         this.#peopleSearchComponent.setValue(this.#peopleSearchQuery);
 
@@ -486,6 +561,8 @@ export default class ProfilePresenter {
             this.#renderMyCoursesTab();
         } else if (tabName === "all-courses") {
             this.#renderAllCoursesTab();
+        } else if (tabName === "author-courses") {
+            this.#renderAuthorCoursesTab();
         } else if (tabName === "people") {
             this.#renderPeopleTab();
         }
@@ -555,7 +632,18 @@ export default class ProfilePresenter {
         this.#profileContainerComponent.element.style.display = "block";
         this.#showFooter();
         this.#courseContentPresenter = null;
-        this.#renderMyCoursesList();
+
+        if (this.#activeTab === "author-courses") {
+            this.#renderAuthorCoursesTab();
+            return;
+        }
+
+        if (this.#activeTab === "all-courses") {
+            this.#renderAllCoursesTab();
+            return;
+        }
+
+        this.#renderMyCoursesTab();
     };
 
     #handleGoToMyCourses = () => {
@@ -564,6 +652,7 @@ export default class ProfilePresenter {
             this.#courseContentPresenter = null;
         }
 
+        this.#editingCourseId = null;
         this.#profileContainerComponent.element.style.display = "block";
         this.#showFooter();
         this.#renderMyCoursesTab();
@@ -579,13 +668,87 @@ export default class ProfilePresenter {
         this.#renderInfoPage(pageKey);
     };
 
-    async #handleDeleteCourse(courseTitle) {
-        await this.#coursesModel.removeCourse(courseTitle);
+    #handleCreateCourse = async (payload, meta = {}) => {
+        if (!this.#createCourseFormComponent) {
+            return;
+        }
+
+        this.#createCourseFormComponent.setSaving(true);
+
+        try {
+            if (meta.mode === "edit" && meta.courseId) {
+                await this.#coursesModel.editCreatedCourse(meta.courseId, payload);
+            } else {
+                await this.#coursesModel.createCourse(payload);
+            }
+
+            this.#editingCourseId = null;
+            this.#createCourseFormComponent.reset();
+            this.#renderAuthorCoursesTab();
+        } finally {
+            this.#createCourseFormComponent?.setSaving(false);
+        }
+    };
+
+    #handleCourseFormCancel = () => {
+        this.#editingCourseId = null;
+    };
+
+    #handleEditCourse = (courseId) => {
+        this.#editingCourseId = courseId;
+        this.#renderAuthorCoursesTab();
+    };
+
+    #loadCourseDraftIntoEditor = async (courseId) => {
+        if (!this.#createCourseFormComponent) {
+            return;
+        }
+
+        this.#createCourseFormComponent.openForCreate();
+        this.#createCourseFormComponent.setSaving(true);
+
+        try {
+            const courseDraft = await this.#coursesModel.getEditableCourseDraft(courseId);
+            if (!courseDraft || this.#editingCourseId !== courseId || this.#activeTab !== "author-courses") {
+                return;
+            }
+
+            this.#createCourseFormComponent.openForEdit(courseDraft);
+        } catch (error) {
+            if (this.#editingCourseId !== courseId || this.#activeTab !== "author-courses") {
+                return;
+            }
+
+            this.#editingCourseId = null;
+            this.#createCourseFormComponent.showError(error.message || "Не удалось загрузить курс для редактирования.");
+        } finally {
+            this.#createCourseFormComponent?.setSaving(false);
+        }
+    };
+
+    async #handleDeleteCourse(courseId) {
+        if (this.#editingCourseId === courseId) {
+            this.#editingCourseId = null;
+        }
+
+        await this.#coursesModel.removeCourse(courseId);
+
+        if (this.#activeTab === "author-courses") {
+            this.#renderAuthorCoursesTab();
+            return;
+        }
+
         this.#renderMyCoursesList();
     }
 
-    async #handleEnrollCourse(courseTitle) {
-        await this.#coursesModel.enrollCourse(courseTitle);
+    async #handleEnrollCourse(courseId) {
+        await this.#coursesModel.enrollCourse(courseId);
+
+        if (this.#activeTab === "author-courses") {
+            this.#renderAuthorCoursesTab();
+            return;
+        }
+
         this.#renderAllCoursesList();
     }
 }

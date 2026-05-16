@@ -38,19 +38,24 @@ function createAllCourseItemTemplate(course) {
     const safeDescription = escapeHtml(course.desc || "Описание курса скоро появится.");
     const safeLevel = escapeHtml(course.level || "Без уровня");
     const backgroundStyle = imageUrl ? `style="background-image: url('${imageUrl}');"` : "";
+    const badgeLabel = course.isOwner ? "Мой курс" : "Новый курс";
+    const editButton = course.isOwner
+        ? '<button class="btn btn-secondary btn-owner-edit" type="button">Редактировать</button>'
+        : "";
 
     return (
         `<article class="course-listing">
             <div class="course-listing-media" ${backgroundStyle}></div>
             <div class="course-listing-content">
                 <div class="course-listing-info">
-                    <span class="course-listing-badge">Новый курс</span>
+                    <span class="course-listing-badge">${badgeLabel}</span>
                     <h3>${safeTitle}</h3>
                     <p>${safeDescription}</p>
                 </div>
                 <div class="course-listing-actions">
                     <span class="course-level-chip">Уровень: ${safeLevel}</span>
-                    <button class="btn btn-enroll">Записаться</button>
+                    ${editButton}
+                    <button class="btn btn-enroll" type="button">Записаться</button>
                 </div>
             </div>
         </article>`
@@ -76,7 +81,20 @@ export default class AllCourseCardView extends AbstractComponent {
             evt.preventDefault();
             evt.target.textContent = "Вы уже записаны!";
             evt.target.disabled = true;
-            this._callback.enrollClick(this.#course.title);
+            this._callback.enrollClick(this.#course.id);
+        });
+    }
+
+    setEditClickHandler(callback) {
+        const button = this.element.querySelector(".btn-owner-edit");
+        if (!button) {
+            return;
+        }
+
+        this._callback.editClick = callback;
+        button.addEventListener("click", (evt) => {
+            evt.preventDefault();
+            this._callback.editClick(this.#course.id);
         });
     }
 }

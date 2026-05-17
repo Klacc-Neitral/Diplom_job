@@ -32,13 +32,19 @@ function escapeHtml(value) {
         .replaceAll("'", "&#39;");
 }
 
-function createCourseCardTemplate(course) {
-    const { title, percent, img, action, isOwner } = course;
+function createCourseCardTemplate(course, mode) {
+    const { title, percent, img, action, isOwner, canEdit, canDelete } = course;
     const btnClass = percent === 0 ? "btn-start" : "";
     const imageUrl = normalizeImageUrl(img);
     const ownerBadge = isOwner ? '<span class="course-card-badge">Мой курс</span>' : "";
-    const editButton = isOwner
+    const editButton = canEdit
         ? '<button class="btn btn-course btn-edit-course" type="button">Редактировать</button>'
+        : "";
+    const deleteCourseButton = canDelete
+        ? '<button class="btn btn-course btn-delete-course" type="button">Удалить курс</button>'
+        : "";
+    const removeEnrollmentButton = mode === "enrolled"
+        ? '<button class="btn btn-course btn-delete" type="button" aria-label="Убрать курс из моих">Убрать</button>'
         : "";
 
     return (
@@ -55,7 +61,8 @@ function createCourseCardTemplate(course) {
                     <div class="course-card-actions">
                         <button class="btn btn-course btn-course-action ${btnClass}" type="button">${escapeHtml(action)}</button>
                         ${editButton}
-                        <button class="btn btn-course btn-delete" type="button" aria-label="Удалить курс">✕</button>
+                        ${deleteCourseButton}
+                        ${removeEnrollmentButton}
                     </div>
                 </div>
                 <span class="course-card-percent">${percent}%</span>
@@ -66,21 +73,27 @@ function createCourseCardTemplate(course) {
 
 export default class MyCourseCardView extends AbstractComponent {
     #course = null;
+    #mode = "enrolled";
     _callback = {};
 
-    constructor(course) {
+    constructor(course, options = {}) {
         super();
         this.#course = course;
+        this.#mode = options.mode ?? "enrolled";
     }
 
     get template() {
-        return createCourseCardTemplate(this.#course);
+        return createCourseCardTemplate(this.#course, this.#mode);
     }
 
     setDeleteClickHandler(callback) {
-        this._callback.deleteClick = callback;
+        const button = this.element.querySelector(".btn-delete");
+        if (!button) {
+            return;
+        }
 
-        this.element.querySelector(".btn-delete").addEventListener("click", (evt) => {
+        this._callback.deleteClick = callback;
+        button.addEventListener("click", (evt) => {
             evt.preventDefault();
             this._callback.deleteClick(this.#course.id);
         });
@@ -96,6 +109,19 @@ export default class MyCourseCardView extends AbstractComponent {
         button.addEventListener("click", (evt) => {
             evt.preventDefault();
             this._callback.editClick(this.#course.id);
+        });
+    }
+
+    setDeleteCourseClickHandler(callback) {
+        const button = this.element.querySelector(".btn-delete-course");
+        if (!button) {
+            return;
+        }
+
+        this._callback.deleteCourseClick = callback;
+        button.addEventListener("click", (evt) => {
+            evt.preventDefault();
+            this._callback.deleteCourseClick(this.#course.id);
         });
     }
 

@@ -39,8 +39,11 @@ function createAllCourseItemTemplate(course) {
     const safeLevel = escapeHtml(course.level || "Без уровня");
     const backgroundStyle = imageUrl ? `style="background-image: url('${imageUrl}');"` : "";
     const badgeLabel = course.isOwner ? "Мой курс" : "Новый курс";
-    const editButton = course.isOwner
+    const editButton = course.canEdit
         ? '<button class="btn btn-secondary btn-owner-edit" type="button">Редактировать</button>'
+        : "";
+    const deleteButton = course.canDelete
+        ? '<button class="btn btn-secondary btn-owner-delete" type="button">Удалить курс</button>'
         : "";
 
     return (
@@ -55,6 +58,7 @@ function createAllCourseItemTemplate(course) {
                 <div class="course-listing-actions">
                     <span class="course-level-chip">Уровень: ${safeLevel}</span>
                     ${editButton}
+                    ${deleteButton}
                     <button class="btn btn-enroll" type="button">Записаться</button>
                 </div>
             </div>
@@ -95,6 +99,19 @@ export default class AllCourseCardView extends AbstractComponent {
         button.addEventListener("click", (evt) => {
             evt.preventDefault();
             this._callback.editClick(this.#course.id);
+        });
+    }
+
+    setDeleteCourseClickHandler(callback) {
+        const button = this.element.querySelector(".btn-owner-delete");
+        if (!button) {
+            return;
+        }
+
+        this._callback.deleteCourseClick = callback;
+        button.addEventListener("click", (evt) => {
+            evt.preventDefault();
+            this._callback.deleteCourseClick(this.#course.id);
         });
     }
 }

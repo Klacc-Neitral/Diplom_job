@@ -135,6 +135,14 @@ export default class CoursesModel {
         } catch {}
     }
 
+    async deleteCourse(courseId) {
+        await this.#apiService.deleteCourse(courseId);
+
+        this.#courses = this.#courses.filter((course) => course.id !== courseId);
+        this.#materials = this.#materials.filter((item) => item.course_id !== courseId);
+        this.#quizzesByCourseId.delete(courseId);
+    }
+
     async updateCourseProgress(courseId, newPercent) {
         const course = this.getCourse(courseId);
         if (!course) {

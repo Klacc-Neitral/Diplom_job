@@ -298,10 +298,14 @@ export default class ProfilePresenter {
         }
 
         courses.forEach((course) => {
-            const courseCard = new MyCourseCardView(course);
+            const courseCard = new MyCourseCardView(course, { mode: "enrolled" });
 
             courseCard.setDeleteClickHandler((courseId) => {
                 this.#handleDeleteCourse(courseId);
+            });
+
+            courseCard.setDeleteCourseClickHandler((courseId) => {
+                this.#handleDeleteCoursePermanently(courseId);
             });
 
             courseCard.setEditClickHandler((courseId) => {
@@ -382,6 +386,9 @@ export default class ProfilePresenter {
             courseCard.setEditClickHandler((courseId) => {
                 this.#handleEditCourse(courseId);
             });
+            courseCard.setDeleteCourseClickHandler((courseId) => {
+                this.#handleDeleteCoursePermanently(courseId);
+            });
             render(courseCard, listContainer);
         });
     }
@@ -398,14 +405,14 @@ export default class ProfilePresenter {
         }
 
         createdCourses.forEach((course) => {
-            const courseCard = new MyCourseCardView(course);
-
-            courseCard.setDeleteClickHandler((courseId) => {
-                this.#handleDeleteCourse(courseId);
-            });
+            const courseCard = new MyCourseCardView(course, { mode: "author" });
 
             courseCard.setEditClickHandler((courseId) => {
                 this.#handleEditCourse(courseId);
+            });
+
+            courseCard.setDeleteCourseClickHandler((courseId) => {
+                this.#handleDeleteCoursePermanently(courseId);
             });
 
             courseCard.setCourseActionClickHandler((courseData) => {
@@ -735,6 +742,34 @@ export default class ProfilePresenter {
 
         if (this.#activeTab === "author-courses") {
             this.#renderAuthorCoursesTab();
+            return;
+        }
+
+        this.#renderMyCoursesList();
+    }
+
+    async #handleDeleteCoursePermanently(courseId) {
+        const shouldDelete = typeof window === "undefined"
+            || typeof window.confirm !== "function"
+            || window.confirm("Удалить курс полностью? Это действие нельзя отменить.");
+
+        if (!shouldDelete) {
+            return;
+        }
+
+        if (this.#editingCourseId === courseId) {
+            this.#editingCourseId = null;
+        }
+
+        await this.#coursesModel.deleteCourse(courseId);
+
+        if (this.#activeTab === "author-courses") {
+            this.#renderAuthorCoursesTab();
+            return;
+        }
+
+        if (this.#activeTab === "all-courses") {
+            this.#renderAllCoursesTab();
             return;
         }
 

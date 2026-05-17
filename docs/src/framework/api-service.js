@@ -4,6 +4,7 @@ const Method = {
     GET: "GET",
     PUT: "PUT",
     POST: "POST",
+    DELETE: "DELETE",
 };
 
 export default class ApiService {
@@ -172,6 +173,15 @@ export default class ApiService {
             method: Method.PUT,
             body: JSON.stringify(payload),
             headers: new Headers({ "Content-Type": "application/json" }),
+        });
+
+        return ApiService.parseResponse(response);
+    }
+
+    async deleteCourse(courseId) {
+        const response = await this.#load({
+            url: `users/${this.#getUserId()}/courses/${courseId}`,
+            method: Method.DELETE,
         });
 
         return ApiService.parseResponse(response);
